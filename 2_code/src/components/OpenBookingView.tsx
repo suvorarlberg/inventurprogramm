@@ -20,6 +20,7 @@ import {
   Trash2,
   ChevronRight,
   CheckCircle2,
+  QrCode,
 } from 'lucide-react';
 import {
   AppSettings,
@@ -43,6 +44,12 @@ import {
   toPrimaryUnitQuantity,
 } from '../utils/units';
 import { parseFreeTextBlock, parseTextWithAI } from '../utils/textParser';
+import {
+  parseStorageLocationInput,
+  StorageLocationSpot,
+} from '../utils/storageLocations';
+import { QrScannerModal } from './QrScannerModal';
+import { LocationAssignmentModal } from './LocationAssignmentModal';
 
 interface OpenBookingViewProps {
   items: InventoryItem[];
@@ -60,6 +67,9 @@ interface OpenBookingViewProps {
     relatedTransactionId?: string;
   }) => void;
   onUpdateItemExpiry?: (itemId: string, expiryDate?: string) => void;
+  onUpdateItemLocation?: (itemId: string, location?: string) => void;
+  scannedLocationCode?: string | null;
+  onClearScannedLocationCode?: () => void;
 }
 
 export const OpenBookingView: React.FC<OpenBookingViewProps> = ({
@@ -71,6 +81,9 @@ export const OpenBookingView: React.FC<OpenBookingViewProps> = ({
   onClearSelectedReturnTx,
   onExecuteBooking,
   onUpdateItemExpiry,
+  onUpdateItemLocation,
+  scannedLocationCode,
+  onClearScannedLocationCode,
 }) => {
   const [mode, setMode] = useState<BookingMode>('withdraw');
   const [inputMethod, setInputMethod] = useState<'list' | 'text'>('list');
@@ -78,6 +91,20 @@ export const OpenBookingView: React.FC<OpenBookingViewProps> = ({
   const [searchQuery, setSearchQuery] = useState('');
   const [mhdEditingItem, setMhdEditingItem] = useState<InventoryItem | null>(null);
   const [mhdDateDraft, setMhdDateDraft] = useState<string>('');
+  const [locationEditingItem, setLocationEditingItem] = useState<InventoryItem | null>(null);
+  const [globalScannerOpen, setGlobalScannerOpen] = useState(false);
+  const [activeLocationSpot, setActiveLocationSpot] = useState<StorageLocationSpot | null>(null);
+
+  useEffect(() => {
+    if (scannedLocationCode) {
+      const parsed = parseStorageLocationInput(scannedLocationCode);
+      if (parsed) {
+        setActiveLocationSpot(parsed);
+        setSearchQuery(parsed.code);
+      }
+      onClearScannedLocationCode?.();
+    }
+  }, [scannedLocationCode]);
 
   // Warenkorb: itemId -> { itemId, amount, unit }
   const [cart, setCart] = useState<Record<string, CartEntry>>({});
@@ -1232,15 +1259,35 @@ export const OpenBookingView: React.FC<OpenBookingViewProps> = ({
               })}
             </div>
 
-            <div className="relative flex-1">
-              <Search className="w-4 h-4 text-slate-400 absolute left-3.5 top-1/2 -translate-y-1/2" />
-              <input
-                type="text"
-                value={searchQuery}
-                onChange={(e) => setSearchQuery(e.target.value)}
-                placeholder="Artikel oder Lagerort suchen (z. B. Bier, Gaffa, Regal)..."
-                className="w-full pl-9 pr-4 py-2 rounded-xl bg-slate-900 border border-slate-800 focus:border-sky-500 focus:outline-none text-sm text-white placeholder:text-slate-500"
-              />
+            <div className="flex gap-2 flex-1">
+              <div className="relative flex-1">
+                <Search className="w-4 h-4 text-slate-400 absolute left-3.5 top-1/2 -translate-y-1/2" />
+                <input
+                  type="text"
+                  value={searchQuery}
+                  onChange={(e) => setSearchQuery(e.target.value)}
+                  placeholder="Artikel oder Stellplatz suchen (z. B. Bier, GER-E0-P01)..."
+                  className="w-full pl-9 pr-8 py-2 rounded-xl bg-slate-900 border border-slate-800 focus:border-sky-500 focus:outline-none text-sm text-white placeholder:text-slate-500"
+                />
+                {searchQuery && (
+                  <button
+                    type="button"
+                    onClick={() => setSearchQuery('')}
+                    className="absolute right-2.5 top-1/2 -translate-y-1/2 text-xs text-slate-400 hover:text-white cursor-pointer"
+                  >
+                    ✕
+                  </button>
+                )}
+              </div>
+              <button
+                type="button"
+                onClick={() => setGlobalScannerOpen(true)}
+                className="flex items-center gap-1.5 px-3.5 py-2 rounded-xl bg-sky-500/15 hover:bg-sky-500/25 border border-sky-500/40 text-sky-300 text-xs font-bold whitespace-nowrap cursor-pointer shrink-0 transition"
+                title="Stellplatz-QR-Code scannen oder Regal auswählen, um Artikel zu filtern oder nachträglich zuzuweisen"
+              >
+                <QrCode className="w-4 h-4 text-sky-400" />
+                <span>Stellplatz-QR</span>
+              </button>
             </div>
           </div>
 
@@ -1362,12 +1409,35 @@ export const OpenBookingView: React.FC<OpenBookingViewProps> = ({
                         )}
                       </div>
 
-                      {item.location && (
-                        <p className="flex items-center gap-1 text-xs text-slate-400 mt-1">
-                          <MapPin className="w-3 h-3 text-slate-500 shrink-0" />
-                          <span>{item.location}</span>
-                        </p>
-                      )}
+                      <div className="mt-1">
+                        {item.location ? (
+                          <button
+                            type="button"
+                            onClick={(e) => {
+                              e.stopPropagation();
+                              setLocationEditingItem(item);
+                            }}
+                            className="inline-flex items-center gap-1 text-xs text-slate-300 hover:text-sky-300 bg-slate-950/80 hover:bg-slate-800 px-2 py-0.5 rounded-lg border border-slate-800 hover:border-sky-500/40 transition cursor-pointer text-left"
+                            title="Stellplatz ändern oder per QR-Code scannen"
+                          >
+                            <MapPin className="w-3 h-3 text-sky-400 shrink-0" />
+                            <span>{item.location}</span>
+                          </button>
+                        ) : (
+                          <button
+                            type="button"
+                            onClick={(e) => {
+                              e.stopPropagation();
+                              setLocationEditingItem(item);
+                            }}
+                            className="inline-flex items-center gap-1 text-[10px] font-medium px-2 py-0.5 rounded-full bg-slate-800/80 hover:bg-slate-700 text-slate-400 hover:text-sky-300 border border-slate-700/60 transition cursor-pointer"
+                            title="Stellplatz per QR-Scan oder Auswahl zuweisen"
+                          >
+                            <QrCode className="w-3 h-3 text-sky-400 shrink-0" />
+                            <span>+ Stellplatz / QR</span>
+                          </button>
+                        )}
+                      </div>
 
                       {mode === 'return' && (
                         <p className="text-xs mt-1">
@@ -1719,6 +1789,68 @@ export const OpenBookingView: React.FC<OpenBookingViewProps> = ({
           </div>
         </div>
       )}
+
+      {/* Stellplatz einem einzelnen Artikel per QR-Scan oder Auswahl zuweisen */}
+      <QrScannerModal
+        isOpen={Boolean(locationEditingItem)}
+        onClose={() => setLocationEditingItem(null)}
+        items={items}
+        title={
+          locationEditingItem
+            ? `Stellplatz für „${locationEditingItem.name}“`
+            : 'Stellplatz wählen'
+        }
+        subtitle="Scanne den QR-Code am Regal oder wähle Regal (GER, TMR, TSR, MR), Ebene (0–3) & Platz (1–20)."
+        currentLocationText={locationEditingItem?.location}
+        onSelectLocation={(spot) => {
+          if (locationEditingItem && onUpdateItemLocation) {
+            onUpdateItemLocation(locationEditingItem.id, spot.fullDisplayLabel);
+            setSuccessBanner(
+              `Stellplatz „${spot.fullDisplayLabel}“ wurde „${locationEditingItem.name}“ zugewiesen.`
+            );
+          }
+          setLocationEditingItem(null);
+        }}
+        onClearLocation={() => {
+          if (locationEditingItem && onUpdateItemLocation) {
+            onUpdateItemLocation(locationEditingItem.id, undefined);
+          }
+          setLocationEditingItem(null);
+        }}
+      />
+
+      {/* Globaler Stellplatz-Scanner (öffnet danach das Stellplatz-Fenster zum Filtern oder Zuweisen) */}
+      <QrScannerModal
+        isOpen={globalScannerOpen}
+        onClose={() => setGlobalScannerOpen(false)}
+        items={items}
+        title="Stellplatz-QR scannen oder auswählen"
+        subtitle="Scanne ein Regalschild im Keller, um die dortigen Artikel zu sehen oder nachträglich Artikel mit diesem Platz zu verbinden."
+        onSelectLocation={(spot) => {
+          setGlobalScannerOpen(false);
+          setActiveLocationSpot(spot);
+        }}
+      />
+
+      {/* Stellplatz-Detail- & Schnell-Zuweisungs-Fenster */}
+      <LocationAssignmentModal
+        spot={activeLocationSpot}
+        items={items}
+        onClose={() => setActiveLocationSpot(null)}
+        onAssignItemToSpot={(itemId, spot) => {
+          if (onUpdateItemLocation) {
+            onUpdateItemLocation(itemId, spot ? spot.fullDisplayLabel : undefined);
+          }
+        }}
+        onFilterBySpot={(spot) => {
+          setSelectedCategory('all');
+          setSearchQuery(spot.code);
+        }}
+        onSwitchSpotRequest={() => {
+          setActiveLocationSpot(null);
+          setGlobalScannerOpen(true);
+        }}
+      />
     </div>
   );
 };

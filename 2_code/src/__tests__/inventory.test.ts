@@ -23,6 +23,15 @@ import {
   normalizePocketBaseUrl,
   toPocketBaseId,
 } from '../utils/pocketbaseSync';
+import {
+  ALL_PREPLANNED_LOCATIONS,
+  buildDefaultPrintCountsMap,
+  buildLocationCode,
+  buildLocationQrPayload,
+  itemMatchesLocationSpot,
+  parseStorageLocationInput,
+  SHELF_DEFINITIONS,
+} from '../utils/storageLocations';
 
 const now = new Date().toISOString();
 
@@ -337,6 +346,41 @@ describe('Optionales Ablaufdatum (MHD) & Datumsfunktionen', () => {
 
     const result = parseInventoryCsv(importCsv, [itemWithExpiry]);
     expect(result.items[0].expiryDate).toBe('2026-12-31');
+  });
+});
+
+describe('Stellplatz- & QR-Code-System (GER, TMR, TSR, MR mit Ebenen 0–3 & 20 Plätzen)', () => {
+  it('plant alle 4 Regale mit je 4 Ebenen (0, 1, 2, 3) und 20 Plätzen auf Vorrat ein (320 Plätze)', () => {
+    expect(SHELF_DEFINITIONS.map((s) => s.id)).toEqual(['GER', 'TMR', 'TSR', 'MR']);
+    expect(ALL_PREPLANNED_LOCATIONS.length).toBe(4 * 4 * 20);
+    expect(buildLocationCode('GER', 0, 1)).toBe('GER-E0-P01');
+    expect(buildLocationCode('MR', 3, 20)).toBe('MR-E3-P20');
+  });
+
+  it('liefert eine Standard-Druckvorauswahl von ca. 50 Etiketten (52 Stück)', () => {
+    const counts = buildDefaultPrintCountsMap();
+    const total = Object.values(counts).reduce((a, b) => a + b, 0);
+    expect(total).toBe(52);
+  });
+
+  it('erkennt Stellplätze aus QR-URLs, Kurzcodes und Volltext-Lagerorten zuverlässig', () => {
+    const fromCode = parseStorageLocationInput('GER-E0-P01');
+    expect(fromCode?.code).toBe('GER-E0-P01');
+    expect(fromCode?.shelfName).toBe('Getränke- und Essensregal');
+    expect(fromCode?.level).toBe(0);
+    expect(fromCode?.spot).toBe(1);
+
+    const qrUrl = buildLocationQrPayload(DEFAULT_SETTINGS, 'TMR-E2-P15', 'url');
+    const fromUrl = parseStorageLocationInput(qrUrl);
+    expect(fromUrl?.code).toBe('TMR-E2-P15');
+    expect(fromUrl?.shelfName).toBe('Trainermaterialregal');
+
+    const fromFlexible = parseStorageLocationInput('tsr-3-7');
+    expect(fromFlexible?.code).toBe('TSR-E3-P07');
+
+    const fromFullDisplay = parseStorageLocationInput(fromCode!.fullDisplayLabel);
+    expect(fromFullDisplay?.code).toBe('GER-E0-P01');
+    expect(itemMatchesLocationSpot(fromCode!.fullDisplayLabel, fromCode!)).toBe(true);
   });
 });
 

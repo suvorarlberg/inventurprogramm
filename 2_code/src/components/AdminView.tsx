@@ -35,6 +35,7 @@ import {
   ChevronUp,
   ArrowLeft,
   ShieldAlert,
+  MapPin,
 } from 'lucide-react';
 import { QRCodeSVG } from 'qrcode.react';
 import {
@@ -84,6 +85,13 @@ import {
   verifyTotp,
   verifyTwoFactorInput,
 } from '../utils/totp';
+import {
+  buildLocationQrPayload,
+  StorageLocationSpot,
+} from '../utils/storageLocations';
+import { QrScannerModal } from './QrScannerModal';
+import { LocationAssignmentModal } from './LocationAssignmentModal';
+import { LabelSizeOption, ShelfQrPrintManager } from './ShelfQrPrintManager';
 
 interface AdminViewProps {
   items: InventoryItem[];
@@ -100,6 +108,7 @@ interface AdminViewProps {
     updatedExpiries?: Record<string, string | undefined>
   ) => void;
   onUpsertItem: (item: InventoryItem) => void;
+  onUpdateItemLocation?: (itemId: string, location?: string) => void;
   onDeleteItem: (itemId: string) => void;
   onBulkImportItems: (
     newItems: InventoryItem[],
@@ -122,6 +131,7 @@ export const AdminView: React.FC<AdminViewProps> = ({
   onClearInitial2FAVerified,
   onSaveInitialInventory,
   onUpsertItem,
+  onUpdateItemLocation,
   onDeleteItem,
   onBulkImportItems,
   onUpdateSettings,
@@ -142,9 +152,19 @@ export const AdminView: React.FC<AdminViewProps> = ({
   const [passwordInput, setPasswordInput] = useState('');
   const [passwordError, setPasswordError] = useState(false);
   const [adminSubTab, setAdminSubTab] = useState<
-    'inventory' | 'items' | 'csv' | 'settings'
+    'inventory' | 'items' | 'locations' | 'csv' | 'settings'
   >('inventory');
   const [statusMessage, setStatusMessage] = useState<string | null>(null);
+
+  // State für Stellplatz-QR-Code-Druck & Scanner im Admin-Bereich
+  const [printMode, setPrintMode] = useState<'door_qr' | 'shelf_labels'>('door_qr');
+  const [spotsToPrint, setSpotsToPrint] = useState<StorageLocationSpot[]>([]);
+  const [printLabelSize, setPrintLabelSize] = useState<LabelSizeOption>('standard_3col');
+  const [printQrMode, setPrintQrMode] = useState<'url' | 'short_code'>('url');
+  const [formScannerMode, setFormScannerMode] = useState<'camera' | 'picker' | null>(null);
+  const [adminQuickSpotItem, setAdminQuickSpotItem] = useState<InventoryItem | null>(null);
+  const [adminSelectedSpot, setAdminSelectedSpot] = useState<StorageLocationSpot | null>(null);
+  const [adminSpotScannerOpen, setAdminSpotScannerOpen] = useState(false);
   const [newMemberName, setNewMemberName] = useState('');
   const [memberPasswordDrafts, setMemberPasswordDrafts] = useState<Record<string, string>>({});
   const [copiedCredentials, setCopiedCredentials] = useState(false);
@@ -1202,20 +1222,73 @@ export const AdminView: React.FC<AdminViewProps> = ({
 
   return (
     <div className="space-y-5 pb-20">
-      {/* Nur beim Drucken sichtbarer Kellertür-QR-Code-Aushang */}
-      <div className="hidden print-only p-8 text-center space-y-6">
-        <h1 className="text-3xl font-bold">{settings.clubName} – Digitale Kellerliste</h1>
-        <p className="text-lg">
-          Bitte jede <strong>Entnahme</strong>, <strong>Rückgabe</strong> und{' '}
-          <strong>Befüllung</strong> kurz per Smartphone eintragen!
-        </p>
-        <div className="inline-block p-6 border-4 border-black rounded-2xl">
-          <QRCodeSVG value={shareUrl} size={260} />
+      {/* Druckbereich: Entweder Stellplatz-QR-Etiketten zum Ausschneiden ODER Kellertür-QR-Code */}
+      {printMode === 'shelf_labels' && spotsToPrint.length > 0 ? (
+        <div className="hidden print-only p-1 text-black bg-white">
+          <div className="mb-2 pb-1 border-b border-slate-400 flex items-center justify-between text-xs">
+            <span className="font-bold">
+              {settings.clubName} – Stellplatz-QR-Codes zum Ausschneiden ({spotsToPrint.length} Stück)
+            </span>
+            <span>Regale: GER • TMR • TSR • MR (Ebenen 0–3)</span>
+          </div>
+          <div
+            className={`grid gap-1.5 ${
+              printLabelSize === 'compact_4col'
+                ? 'grid-cols-4'
+                : 'grid-cols-3'
+            }`}
+          >
+            {spotsToPrint.map((spot) => {
+              const qrPayload = buildLocationQrPayload(settings, spot.code, printQrMode);
+              return (
+                <div
+                  key={spot.code}
+                  className="print-label-card border border-dashed border-slate-500 rounded p-1.5 flex items-center gap-2 bg-white text-black"
+                >
+                  <div className="shrink-0 bg-white">
+                    <QRCodeSVG
+                      value={qrPayload}
+                      size={
+                        printLabelSize === 'compact_4col'
+                          ? 44
+                          : printLabelSize === 'standard_3col'
+                          ? 52
+                          : 64
+                      }
+                      level="M"
+                    />
+                  </div>
+                  <div className="min-w-0 flex-1 leading-tight">
+                    <div className="font-mono font-extrabold text-xs sm:text-sm text-black tracking-tight">
+                      {spot.code}
+                    </div>
+                    <div className="text-[10px] font-bold text-black truncate mt-0.5">
+                      {spot.shelfName}
+                    </div>
+                    <div className="text-[9px] font-semibold text-slate-800 mt-0.5">
+                      {spot.levelAndSpotText}
+                    </div>
+                  </div>
+                </div>
+              );
+            })}
+          </div>
         </div>
-        <p className="text-base font-medium">
-          Kamera öffnen & QR-Code scannen – kein Login oder Passwort für Buchungen nötig!
-        </p>
-      </div>
+      ) : (
+        <div className="hidden print-only p-8 text-center space-y-6">
+          <h1 className="text-3xl font-bold">{settings.clubName} – Digitale Kellerliste</h1>
+          <p className="text-lg">
+            Bitte jede <strong>Entnahme</strong>, <strong>Rückgabe</strong> und{' '}
+            <strong>Befüllung</strong> kurz per Smartphone eintragen!
+          </p>
+          <div className="inline-block p-6 border-4 border-black rounded-2xl">
+            <QRCodeSVG value={shareUrl} size={260} />
+          </div>
+          <p className="text-base font-medium">
+            Kamera öffnen & QR-Code scannen – kein Login oder Passwort für Buchungen nötig!
+          </p>
+        </div>
+      )}
 
       {statusMessage && (
         <div className="flex items-center gap-3 p-4 rounded-2xl bg-emerald-500/20 border border-emerald-500/40 text-emerald-200 no-print">
@@ -1255,6 +1328,18 @@ export const AdminView: React.FC<AdminViewProps> = ({
           </button>
 
           <button
+            onClick={() => setAdminSubTab('locations')}
+            className={`flex items-center gap-1.5 px-3.5 py-2 rounded-xl text-xs sm:text-sm font-semibold transition cursor-pointer ${
+              adminSubTab === 'locations'
+                ? 'bg-sky-500 text-slate-950'
+                : 'text-slate-300 hover:bg-slate-800'
+            }`}
+          >
+            <QrCode className="w-4 h-4" />
+            <span>3. Stellplätze & QR-Codes</span>
+          </button>
+
+          <button
             onClick={() => setAdminSubTab('csv')}
             className={`flex items-center gap-1.5 px-3.5 py-2 rounded-xl text-xs sm:text-sm font-semibold transition cursor-pointer ${
               adminSubTab === 'csv'
@@ -1263,7 +1348,7 @@ export const AdminView: React.FC<AdminViewProps> = ({
             }`}
           >
             <FileSpreadsheet className="w-4 h-4" />
-            <span>3. CSV / Excel Import & Export</span>
+            <span>4. CSV / Excel Import & Export</span>
           </button>
 
           <button
@@ -1275,7 +1360,7 @@ export const AdminView: React.FC<AdminViewProps> = ({
             }`}
           >
             <Settings className="w-4 h-4" />
-            <span>4. Personen, Datenbank & Passwort</span>
+            <span>5. Personen, Datenbank & Passwort</span>
           </button>
         </div>
 
@@ -1752,12 +1837,34 @@ export const AdminView: React.FC<AdminViewProps> = ({
 
               <div className="grid grid-cols-1 sm:grid-cols-2 gap-2.5">
                 <div>
-                  <label className="block text-xs text-slate-300 mb-1">Lagerort im Keller</label>
+                  <div className="flex items-center justify-between mb-1 gap-1">
+                    <label className="text-xs text-slate-300">Stellplatz / Lagerort</label>
+                    <div className="flex items-center gap-1.5">
+                      <button
+                        type="button"
+                        onClick={() => setFormScannerMode('camera')}
+                        className="inline-flex items-center gap-1 text-[11px] font-semibold text-sky-400 hover:text-sky-300 cursor-pointer"
+                        title="QR-Code am Regal scannen"
+                      >
+                        <QrCode className="w-3 h-3" />
+                        <span>QR scannen</span>
+                      </button>
+                      <span className="text-slate-600">•</span>
+                      <button
+                        type="button"
+                        onClick={() => setFormScannerMode('picker')}
+                        className="text-[11px] font-semibold text-sky-400 hover:text-sky-300 hover:underline cursor-pointer"
+                        title="Regal (GER, TMR, TSR, MR), Ebene (0–3) & Platz wählen"
+                      >
+                        Platz wählen
+                      </button>
+                    </div>
+                  </div>
                   <input
                     type="text"
                     value={itemForm.location}
                     onChange={(e) => setItemForm({ ...itemForm, location: e.target.value })}
-                    placeholder="z. B. Getränkekeller Regal A, Werkzeugschrank..."
+                    placeholder="QR scannen / Platz wählen (z. B. GER-E0-P01)..."
                     className="w-full px-3 py-2 rounded-xl bg-slate-950 border border-slate-700 text-sm text-white"
                   />
                 </div>
@@ -1978,6 +2085,14 @@ export const AdminView: React.FC<AdminViewProps> = ({
                         <div className="flex items-center gap-1.5 shrink-0">
                           <button
                             type="button"
+                            onClick={() => setAdminQuickSpotItem(item)}
+                            className="p-2 rounded-lg bg-slate-800 hover:bg-slate-700 text-emerald-300 cursor-pointer"
+                            title="Stellplatz per QR-Scan oder Regal-Auswahl zuweisen"
+                          >
+                            <QrCode className="w-4 h-4" />
+                          </button>
+                          <button
+                            type="button"
                             onClick={() => startEditItem(item)}
                             className="p-2 rounded-lg bg-slate-800 hover:bg-slate-700 text-sky-300 cursor-pointer"
                             title="Bearbeiten"
@@ -2006,7 +2121,26 @@ export const AdminView: React.FC<AdminViewProps> = ({
         </div>
       )}
 
-      {/* SUB-TAB 3: CSV / EXCEL IMPORT & EXPORT */}
+      {/* SUB-TAB 3: STELLPLÄTZE & QR-CODES (GER, TMR, TSR, MR) */}
+      {adminSubTab === 'locations' && (
+        <ShelfQrPrintManager
+          items={items}
+          settings={settings}
+          onOpenSpotModal={(spot) => setAdminSelectedSpot(spot)}
+          onOpenScannerModal={() => setAdminSpotScannerOpen(true)}
+          onPrintLabels={(spots, size, qrMode) => {
+            setSpotsToPrint(spots);
+            setPrintLabelSize(size);
+            setPrintQrMode(qrMode);
+            setPrintMode('shelf_labels');
+            setTimeout(() => {
+              window.print();
+            }, 80);
+          }}
+        />
+      )}
+
+      {/* SUB-TAB 4: CSV / EXCEL IMPORT & EXPORT */}
       {adminSubTab === 'csv' && (
         <div className="grid grid-cols-1 md:grid-cols-2 gap-4 no-print">
           <div className="bg-slate-900 border border-slate-800 rounded-2xl p-5 space-y-4">
@@ -3014,7 +3148,10 @@ export const AdminView: React.FC<AdminViewProps> = ({
 
               <button
                 type="button"
-                onClick={() => window.print()}
+                onClick={() => {
+                  setPrintMode('door_qr');
+                  setTimeout(() => window.print(), 50);
+                }}
                 className="flex-1 flex items-center justify-center gap-1.5 py-2.5 px-3 rounded-xl bg-sky-500 hover:bg-sky-400 text-xs font-bold text-slate-950 cursor-pointer"
               >
                 <Printer className="w-4 h-4" />
@@ -3025,6 +3162,108 @@ export const AdminView: React.FC<AdminViewProps> = ({
           </div>
         </div>
       )}
+
+      {/* Scanner/Auswahl-Modal für das Artikelformular im Admin-Bereich */}
+      <QrScannerModal
+        isOpen={formScannerMode !== null}
+        onClose={() => setFormScannerMode(null)}
+        items={items}
+        initialMode={formScannerMode || 'camera'}
+        title="Stellplatz für Artikel wählen"
+        subtitle="Scanne den QR-Code am Regal oder wähle Regal (GER, TMR, TSR, MR), Ebene (0–3) & Platz (1–20)."
+        currentLocationText={itemForm.location}
+        onSelectLocation={(spot) => {
+          setItemForm((prev) => ({ ...prev, location: spot.fullDisplayLabel }));
+          setFormScannerMode(null);
+        }}
+        onClearLocation={() => {
+          setItemForm((prev) => ({ ...prev, location: '' }));
+          setFormScannerMode(null);
+        }}
+      />
+
+      {/* Schnell-Zuweisung eines Stellplatzes direkt aus der Admin-Artikelliste */}
+      <QrScannerModal
+        isOpen={Boolean(adminQuickSpotItem)}
+        onClose={() => setAdminQuickSpotItem(null)}
+        items={items}
+        title={
+          adminQuickSpotItem
+            ? `Stellplatz für „${adminQuickSpotItem.name}“`
+            : 'Stellplatz zuweisen'
+        }
+        subtitle="Scanne den QR-Code am Regal oder wähle Regal (GER, TMR, TSR, MR), Ebene (0–3) & Platz (1–20)."
+        currentLocationText={adminQuickSpotItem?.location}
+        onSelectLocation={(spot) => {
+          if (adminQuickSpotItem) {
+            if (onUpdateItemLocation) {
+              onUpdateItemLocation(adminQuickSpotItem.id, spot.fullDisplayLabel);
+            } else {
+              onUpsertItem({
+                ...adminQuickSpotItem,
+                location: spot.fullDisplayLabel,
+                updatedAt: new Date().toISOString(),
+              });
+            }
+            showBanner(
+              `Stellplatz „${spot.fullDisplayLabel}“ wurde „${adminQuickSpotItem.name}“ zugewiesen.`
+            );
+          }
+          setAdminQuickSpotItem(null);
+        }}
+        onClearLocation={() => {
+          if (adminQuickSpotItem) {
+            if (onUpdateItemLocation) {
+              onUpdateItemLocation(adminQuickSpotItem.id, undefined);
+            } else {
+              onUpsertItem({
+                ...adminQuickSpotItem,
+                location: undefined,
+                updatedAt: new Date().toISOString(),
+              });
+            }
+          }
+          setAdminQuickSpotItem(null);
+        }}
+      />
+
+      {/* Scanner im Reiter "3. Stellplätze & QR-Codes" zum Öffnen eines Stellplatzes */}
+      <QrScannerModal
+        isOpen={adminSpotScannerOpen}
+        onClose={() => setAdminSpotScannerOpen(false)}
+        items={items}
+        title="Stellplatz-QR scannen oder wählen"
+        subtitle="Scanne ein Etikett, um diesem Stellplatz anschließend per Klick Artikel zuzuweisen."
+        onSelectLocation={(spot) => {
+          setAdminSpotScannerOpen(false);
+          setAdminSelectedSpot(spot);
+        }}
+      />
+
+      {/* Stellplatz-Zuweisungs-Modal im Reiter "3. Stellplätze & QR-Codes" */}
+      <LocationAssignmentModal
+        spot={adminSelectedSpot}
+        items={items}
+        onClose={() => setAdminSelectedSpot(null)}
+        onAssignItemToSpot={(itemId, spot) => {
+          if (onUpdateItemLocation) {
+            onUpdateItemLocation(itemId, spot ? spot.fullDisplayLabel : undefined);
+          } else {
+            const target = items.find((i) => i.id === itemId);
+            if (target) {
+              onUpsertItem({
+                ...target,
+                location: spot ? spot.fullDisplayLabel : undefined,
+                updatedAt: new Date().toISOString(),
+              });
+            }
+          }
+        }}
+        onSwitchSpotRequest={() => {
+          setAdminSelectedSpot(null);
+          setAdminSpotScannerOpen(true);
+        }}
+      />
     </div>
   );
 };

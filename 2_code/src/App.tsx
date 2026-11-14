@@ -53,6 +53,19 @@ export const App: React.FC = () => {
   const [isAdminUnlocked, setIsAdminUnlocked] = useState(false);
   const [initial2FAVerified, setInitial2FAVerified] = useState(false);
   const [selectedReturnTxId, setSelectedReturnTxId] = useState<string | null>(null);
+  const [scannedLocationCode, setScannedLocationCode] = useState<string | null>(() => {
+    try {
+      const params = new URLSearchParams(window.location.search);
+      return (
+        params.get('loc') ||
+        params.get('location') ||
+        params.get('stellplatz') ||
+        null
+      );
+    } catch {
+      return null;
+    }
+  });
 
   const [settings, setSettings] = useState<AppSettings>(() => {
     try {
@@ -91,7 +104,7 @@ export const App: React.FC = () => {
       parsed.pocketbaseUrl = normalizePocketBaseUrl(parsed.pocketbaseUrl);
 
       localStorage.setItem(STORAGE_KEYS.SETTINGS, JSON.stringify(parsed));
-      if (urlDb || clubParam) {
+      if (urlDb || clubParam || params.get('loc') || params.get('location') || params.get('stellplatz')) {
         window.history.replaceState({}, document.title, window.location.pathname);
       }
 
@@ -782,6 +795,23 @@ export const App: React.FC = () => {
     }
   }
 
+  function handleUpdateItemLocation(itemId: string, location?: string) {
+    const now = new Date().toISOString();
+    const nextItems = items.map((i) =>
+      i.id === itemId
+        ? {
+            ...i,
+            location: location?.trim() ? location.trim() : undefined,
+            updatedAt: now,
+          }
+        : i
+    );
+    setItems(nextItems);
+    if (hasCloudConfig && navigator.onLine) {
+      pushToPocketBase(settings, nextItems, transactions).catch(() => {});
+    }
+  }
+
   function handleDeleteItem(itemId: string) {
     const nextItems = items.filter((i) => i.id !== itemId);
     setItems(nextItems);
@@ -896,6 +926,9 @@ export const App: React.FC = () => {
             onClearSelectedReturnTx={() => setSelectedReturnTxId(null)}
             onExecuteBooking={handleExecuteBooking}
             onUpdateItemExpiry={handleUpdateItemExpiry}
+            onUpdateItemLocation={handleUpdateItemLocation}
+            scannedLocationCode={scannedLocationCode}
+            onClearScannedLocationCode={() => setScannedLocationCode(null)}
           />
         )}
 
@@ -939,6 +972,7 @@ export const App: React.FC = () => {
             onClearInitial2FAVerified={() => setInitial2FAVerified(false)}
             onSaveInitialInventory={handleSaveInitialInventory}
             onUpsertItem={handleUpsertItem}
+            onUpdateItemLocation={handleUpdateItemLocation}
             onDeleteItem={handleDeleteItem}
             onBulkImportItems={handleBulkImportItems}
             onUpdateSettings={(newSettings, deletedCatId) => {
