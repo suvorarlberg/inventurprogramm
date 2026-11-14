@@ -768,10 +768,32 @@ export const App: React.FC = () => {
   }
 
   function handleUpsertItem(item: InventoryItem) {
-    const exists = items.some((i) => i.id === item.id);
-    const nextItems = exists
-      ? items.map((i) => (i.id === item.id ? item : i))
-      : [...items, item];
+    const now = new Date().toISOString();
+    const parentObj = item.parentItemId
+      ? items.find((p) => p.id === item.parentItemId)
+      : undefined;
+    const resolvedLocation = parentObj ? parentObj.location || item.location : item.location;
+    const finalItem: InventoryItem = {
+      ...item,
+      location: resolvedLocation,
+    };
+
+    const exists = items.some((i) => i.id === finalItem.id);
+    const baseList = exists
+      ? items.map((i) => (i.id === finalItem.id ? finalItem : i))
+      : [...items, finalItem];
+
+    // Falls dieser Artikel ein Überartikel (Kiste) ist, vererbe seinen Stellplatz an alle Unterartikel in dieser Kiste
+    const nextItems = baseList.map((i) =>
+      i.parentItemId === finalItem.id && i.location !== finalItem.location
+        ? {
+            ...i,
+            location: finalItem.location,
+            updatedAt: now,
+          }
+        : i
+    );
+
     setItems(nextItems);
     if (hasCloudConfig && navigator.onLine) {
       pushToPocketBase(settings, nextItems, transactions).catch(() => {});
@@ -797,11 +819,50 @@ export const App: React.FC = () => {
 
   function handleUpdateItemLocation(itemId: string, location?: string) {
     const now = new Date().toISOString();
+    const cleanLoc = location?.trim() ? location.trim() : undefined;
+    const targetItem = items.find((i) => i.id === itemId);
+    const rootParentId = targetItem?.parentItemId || itemId;
+
+    // Aktualisiere den Stellplatz sowohl für die Kiste (Überartikel) als auch für alle Unterartikel in derselben Kiste
+    const nextItems = items.map((i) =>
+      i.id === itemId || i.id === rootParentId || i.parentItemId === rootParentId
+        ? {
+            ...i,
+            location: cleanLoc,
+            updatedAt: now,
+          }
+        : i
+    );
+    setItems(nextItems);
+    if (hasCloudConfig && navigator.onLine) {
+      pushToPocketBase(settings, nextItems, transactions).catch(() => {});
+    }
+  }
+
+  function handleAddSubItems(parentItem: InventoryItem, newSubItems: InventoryItem[]) {
+    if (newSubItems.length === 0) return;
+    const now = new Date().toISOString();
+    const prepared = newSubItems.map((sub) => ({
+      ...sub,
+      parentItemId: parentItem.id,
+      location: parentItem.location,
+      updatedAt: now,
+    }));
+    const nextItems = [...items, ...prepared];
+    setItems(nextItems);
+    if (hasCloudConfig && navigator.onLine) {
+      pushToPocketBase(settings, nextItems, transactions).catch(() => {});
+    }
+  }
+
+  function handleAssignItemToParent(itemId: string, parentItem: InventoryItem | null) {
+    const now = new Date().toISOString();
     const nextItems = items.map((i) =>
       i.id === itemId
         ? {
             ...i,
-            location: location?.trim() ? location.trim() : undefined,
+            parentItemId: parentItem ? parentItem.id : undefined,
+            location: parentItem ? parentItem.location || i.location : i.location,
             updatedAt: now,
           }
         : i
@@ -813,10 +874,18 @@ export const App: React.FC = () => {
   }
 
   function handleDeleteItem(itemId: string) {
-    const nextItems = items.filter((i) => i.id !== itemId);
+    const now = new Date().toISOString();
+    const nextItems = items
+      .filter((i) => i.id !== itemId)
+      .map((i) =>
+        i.parentItemId === itemId
+          ? { ...i, parentItemId: undefined, updatedAt: now }
+          : i
+      );
     setItems(nextItems);
     if (hasCloudConfig && navigator.onLine) {
       deleteItemFromPocketBase(settings, itemId).catch(() => {});
+      pushToPocketBase(settings, nextItems, transactions).catch(() => {});
     }
   }
 
@@ -927,6 +996,9 @@ export const App: React.FC = () => {
             onExecuteBooking={handleExecuteBooking}
             onUpdateItemExpiry={handleUpdateItemExpiry}
             onUpdateItemLocation={handleUpdateItemLocation}
+            onAddSubItems={handleAddSubItems}
+            onAssignItemToParent={handleAssignItemToParent}
+            onDeleteItem={handleDeleteItem}
             scannedLocationCode={scannedLocationCode}
             onClearScannedLocationCode={() => setScannedLocationCode(null)}
           />
@@ -973,6 +1045,8 @@ export const App: React.FC = () => {
             onSaveInitialInventory={handleSaveInitialInventory}
             onUpsertItem={handleUpsertItem}
             onUpdateItemLocation={handleUpdateItemLocation}
+            onAddSubItems={handleAddSubItems}
+            onAssignItemToParent={handleAssignItemToParent}
             onDeleteItem={handleDeleteItem}
             onBulkImportItems={handleBulkImportItems}
             onUpdateSettings={(newSettings, deletedCatId) => {

@@ -32,8 +32,10 @@ export interface InventoryItem {
   minStock: number;
   /** Zielbestand / Sollbestand für automatische Einkaufsvorschläge */
   targetStock?: number;
-  /** Lagerort im Vereinskeller (z. B. "Getränkekeller Regal A", "Werkzeugschrank") */
+  /** Lagerort im Vereinskeller (z. B. "GER-E0-P01 • Getränke- und Essensregal (Ebene 0, Platz 01)") */
   location?: string;
+  /** Optionaler Überartikel (z. B. Kiste/Box), in dem dieser Unterartikel auf demselben Stellplatz liegt */
+  parentItemId?: string;
   /** Optionales Ablaufdatum / Mindesthaltbarkeitsdatum (MHD) im Format YYYY-MM-DD */
   expiryDate?: string;
   /** Suchbegriffe / Synonyme für die automatische Textblock-Erkennung */

@@ -19,8 +19,11 @@ import {
   Calendar,
   Trash2,
   ChevronRight,
+  ChevronDown,
+  ChevronUp,
   CheckCircle2,
   QrCode,
+  Box,
 } from 'lucide-react';
 import {
   AppSettings,
@@ -50,6 +53,7 @@ import {
 } from '../utils/storageLocations';
 import { QrScannerModal } from './QrScannerModal';
 import { LocationAssignmentModal } from './LocationAssignmentModal';
+import { SubItemsModal } from './SubItemsModal';
 
 interface OpenBookingViewProps {
   items: InventoryItem[];
@@ -68,6 +72,9 @@ interface OpenBookingViewProps {
   }) => void;
   onUpdateItemExpiry?: (itemId: string, expiryDate?: string) => void;
   onUpdateItemLocation?: (itemId: string, location?: string) => void;
+  onAddSubItems?: (parentItem: InventoryItem, newSubItems: InventoryItem[]) => void;
+  onAssignItemToParent?: (itemId: string, parentItem: InventoryItem | null) => void;
+  onDeleteItem?: (itemId: string) => void;
   scannedLocationCode?: string | null;
   onClearScannedLocationCode?: () => void;
 }
@@ -82,6 +89,9 @@ export const OpenBookingView: React.FC<OpenBookingViewProps> = ({
   onExecuteBooking,
   onUpdateItemExpiry,
   onUpdateItemLocation,
+  onAddSubItems,
+  onAssignItemToParent,
+  onDeleteItem,
   scannedLocationCode,
   onClearScannedLocationCode,
 }) => {
@@ -92,6 +102,8 @@ export const OpenBookingView: React.FC<OpenBookingViewProps> = ({
   const [mhdEditingItem, setMhdEditingItem] = useState<InventoryItem | null>(null);
   const [mhdDateDraft, setMhdDateDraft] = useState<string>('');
   const [locationEditingItem, setLocationEditingItem] = useState<InventoryItem | null>(null);
+  const [subItemsManagingParent, setSubItemsManagingParent] = useState<InventoryItem | null>(null);
+  const [expandedBoxIds, setExpandedBoxIds] = useState<Record<string, boolean>>({});
   const [globalScannerOpen, setGlobalScannerOpen] = useState(false);
   const [activeLocationSpot, setActiveLocationSpot] = useState<StorageLocationSpot | null>(null);
 
@@ -493,28 +505,56 @@ export const OpenBookingView: React.FC<OpenBookingViewProps> = ({
     }));
   }
 
+  const subItemsByParentId = useMemo(() => {
+    const map: Record<string, InventoryItem[]> = {};
+    for (const it of items) {
+      if (it.parentItemId) {
+        if (!map[it.parentItemId]) map[it.parentItemId] = [];
+        map[it.parentItemId].push(it);
+      }
+    }
+    return map;
+  }, [items]);
+
   const filteredItems = useMemo(() => {
+    function itemMatchesQuery(item: InventoryItem, q: string): boolean {
+      const matchName = item.name.toLowerCase().includes(q);
+      const matchLoc = (item.location || '').toLowerCase().includes(q);
+      const matchAlias = item.aliases.some((a) => a.toLowerCase().includes(q));
+      const matchExpiry = item.expiryDate
+        ? item.expiryDate.includes(q) ||
+          formatExpiryDate(item.expiryDate).includes(q) ||
+          (q === 'mhd' || q === 'abgelaufen'
+            ? getExpiryStatus(item.expiryDate) === 'expired' ||
+              getExpiryStatus(item.expiryDate) === 'warning'
+            : false)
+        : false;
+      return matchName || matchLoc || matchAlias || matchExpiry;
+    }
+
+    const q = searchQuery.trim().toLowerCase();
+
     return items.filter((item) => {
-      if (selectedCategory !== 'all' && item.category !== selectedCategory) {
+      // Unterartikel standardmäßig in ihrer Kiste gruppieren (sofern die Kiste existiert)
+      if (item.parentItemId && items.some((p) => p.id === item.parentItemId)) {
         return false;
       }
-      if (searchQuery.trim()) {
-        const q = searchQuery.toLowerCase();
-        const matchName = item.name.toLowerCase().includes(q);
-        const matchLoc = (item.location || '').toLowerCase().includes(q);
-        const matchAlias = item.aliases.some((a) => a.toLowerCase().includes(q));
-        const matchExpiry = item.expiryDate
-          ? item.expiryDate.includes(q) ||
-            formatExpiryDate(item.expiryDate).includes(q) ||
-            (q === 'mhd' || q === 'abgelaufen'
-              ? getExpiryStatus(item.expiryDate) === 'expired' || getExpiryStatus(item.expiryDate) === 'warning'
-              : false)
-          : false;
-        return matchName || matchLoc || matchAlias || matchExpiry;
+
+      if (selectedCategory !== 'all' && item.category !== selectedCategory) {
+        const subs = subItemsByParentId[item.id] || [];
+        if (!subs.some((s) => s.category === selectedCategory)) {
+          return false;
+        }
+      }
+
+      if (q) {
+        if (itemMatchesQuery(item, q)) return true;
+        const subs = subItemsByParentId[item.id] || [];
+        return subs.some((s) => itemMatchesQuery(s, q));
       }
       return true;
     });
-  }, [items, selectedCategory, searchQuery]);
+  }, [items, selectedCategory, searchQuery, subItemsByParentId]);
 
   const cartEntries = useMemo(() => Object.values(cart).filter((c) => c.amount > 0), [cart]);
 
@@ -1409,7 +1449,7 @@ export const OpenBookingView: React.FC<OpenBookingViewProps> = ({
                         )}
                       </div>
 
-                      <div className="mt-1">
+                      <div className="mt-1 flex flex-wrap items-center gap-1.5">
                         {item.location ? (
                           <button
                             type="button"
@@ -1437,6 +1477,69 @@ export const OpenBookingView: React.FC<OpenBookingViewProps> = ({
                             <span>+ Stellplatz / QR</span>
                           </button>
                         )}
+
+                        {(() => {
+                          const subItems = subItemsByParentId[item.id] || [];
+                          const isBoxExpanded =
+                            Boolean(expandedBoxIds[item.id]) ||
+                            (Boolean(searchQuery.trim()) &&
+                              subItems.some((s) =>
+                                s.name.toLowerCase().includes(searchQuery.trim().toLowerCase())
+                              ));
+
+                          if (subItems.length > 0) {
+                            return (
+                              <>
+                                <button
+                                  type="button"
+                                  onClick={(e) => {
+                                    e.stopPropagation();
+                                    setExpandedBoxIds((prev) => ({
+                                      ...prev,
+                                      [item.id]: !isBoxExpanded,
+                                    }));
+                                  }}
+                                  className="inline-flex items-center gap-1 text-[11px] font-bold px-2 py-0.5 rounded-lg bg-amber-500/20 hover:bg-amber-500/30 text-amber-300 border border-amber-500/40 transition cursor-pointer"
+                                  title="Kisten-Inhalt / Unterartikel ein- oder ausblenden"
+                                >
+                                  <Box className="w-3 h-3 text-amber-400 shrink-0" />
+                                  <span>{subItems.length} Unterartikel</span>
+                                  {isBoxExpanded ? (
+                                    <ChevronUp className="w-3 h-3" />
+                                  ) : (
+                                    <ChevronDown className="w-3 h-3" />
+                                  )}
+                                </button>
+                                <button
+                                  type="button"
+                                  onClick={(e) => {
+                                    e.stopPropagation();
+                                    setSubItemsManagingParent(item);
+                                  }}
+                                  className="inline-flex items-center gap-1 text-[10px] font-medium px-2 py-0.5 rounded-lg bg-slate-800 hover:bg-slate-700 text-slate-300 border border-slate-700 cursor-pointer"
+                                  title="Unterartikel in dieser Kiste verwalten oder hinzufügen"
+                                >
+                                  <span>+ Inhalt</span>
+                                </button>
+                              </>
+                            );
+                          }
+
+                          return (
+                            <button
+                              type="button"
+                              onClick={(e) => {
+                                e.stopPropagation();
+                                setSubItemsManagingParent(item);
+                              }}
+                              className="inline-flex items-center gap-1 text-[10px] font-medium px-2 py-0.5 rounded-full bg-slate-800/80 hover:bg-slate-700 text-slate-400 hover:text-amber-300 border border-slate-700/60 transition cursor-pointer"
+                              title="Unterartikel für diese Kiste / diesen Artikel anlegen (z. B. 15 Artikel in einer Kiste auf einem Stellplatz)"
+                            >
+                              <Box className="w-3 h-3 text-amber-400 shrink-0" />
+                              <span>+ Unterartikel</span>
+                            </button>
+                          );
+                        })()}
                       </div>
 
                       {mode === 'return' && (
@@ -1576,6 +1679,98 @@ export const OpenBookingView: React.FC<OpenBookingViewProps> = ({
                       )}
                     </div>
                   </div>
+
+                  {/* Aufklappbarer Kisten-Inhalt (Unterartikel auf demselben Stellplatz) */}
+                  {(() => {
+                    const subItems = subItemsByParentId[item.id] || [];
+                    if (subItems.length === 0) return null;
+                    const isBoxExpanded =
+                      Boolean(expandedBoxIds[item.id]) ||
+                      (Boolean(searchQuery.trim()) &&
+                        subItems.some((s) =>
+                          s.name.toLowerCase().includes(searchQuery.trim().toLowerCase())
+                        ));
+                    if (!isBoxExpanded) return null;
+
+                    return (
+                      <div className="mt-1 pt-2.5 border-t border-amber-500/30 bg-slate-950/80 rounded-xl p-2.5 space-y-2">
+                        <div className="flex items-center justify-between gap-2">
+                          <span className="text-[11px] font-bold text-amber-300 flex items-center gap-1.5">
+                            <Box className="w-3.5 h-3.5 text-amber-400" />
+                            <span>
+                              Unterartikel in „{item.name}“ ({subItems.length})
+                            </span>
+                          </span>
+                          <button
+                            type="button"
+                            onClick={() => setSubItemsManagingParent(item)}
+                            className="text-[11px] font-semibold text-sky-400 hover:underline cursor-pointer"
+                          >
+                            + Unterartikel bearbeiten
+                          </button>
+                        </div>
+
+                        <div className="space-y-1.5 max-h-64 overflow-y-auto pr-0.5">
+                          {subItems.map((sub) => {
+                            const subUnit = getSelectedUnit(sub);
+                            const subInCart = cart[sub.id]?.amount || 0;
+                            const subMax = getMaxAllowedForModeInUnit(sub, mode, subUnit);
+                            const subMaxReached =
+                              (mode === 'withdraw' || mode === 'return') && subInCart >= subMax;
+
+                            return (
+                              <div
+                                key={sub.id}
+                                className={`p-2 rounded-lg border flex items-center justify-between gap-2 ${
+                                  subInCart > 0
+                                    ? 'bg-sky-500/10 border-sky-500/50'
+                                    : 'bg-slate-900/90 border-slate-800'
+                                }`}
+                              >
+                                <div className="min-w-0">
+                                  <div className="text-xs font-semibold text-white truncate">
+                                    ↳ {sub.name}
+                                  </div>
+                                  <div className="text-[10px] text-slate-400">
+                                    Im Keller:{' '}
+                                    <strong className="text-emerald-300">
+                                      {formatStockDisplay(sub).primaryText}
+                                    </strong>
+                                  </div>
+                                </div>
+                                <div className="flex items-center gap-1 shrink-0">
+                                  <button
+                                    type="button"
+                                    onClick={() => adjustCartAmount(sub, -1)}
+                                    disabled={subInCart <= 0}
+                                    className="w-7 h-7 rounded-lg bg-slate-800 hover:bg-slate-700 disabled:opacity-30 flex items-center justify-center text-white text-xs font-bold cursor-pointer"
+                                  >
+                                    <Minus className="w-3.5 h-3.5" />
+                                  </button>
+                                  <input
+                                    type="text"
+                                    inputMode="decimal"
+                                    value={subInCart > 0 ? formatGermanNumber(subInCart) : ''}
+                                    placeholder="0"
+                                    onChange={(e) => setExactCartAmount(sub, e.target.value)}
+                                    className="w-10 h-7 text-center rounded-lg bg-slate-950 border border-slate-700 text-xs font-bold text-white"
+                                  />
+                                  <button
+                                    type="button"
+                                    onClick={() => adjustCartAmount(sub, 1)}
+                                    disabled={subMaxReached}
+                                    className="w-7 h-7 rounded-lg bg-sky-500 hover:bg-sky-400 disabled:opacity-30 text-slate-950 flex items-center justify-center text-xs font-bold cursor-pointer"
+                                  >
+                                    <Plus className="w-3.5 h-3.5 stroke-[2.5]" />
+                                  </button>
+                                </div>
+                              </div>
+                            );
+                          })}
+                        </div>
+                      </div>
+                    );
+                  })()}
                 </div>
               );
             })}
@@ -1849,6 +2044,40 @@ export const OpenBookingView: React.FC<OpenBookingViewProps> = ({
         onSwitchSpotRequest={() => {
           setActiveLocationSpot(null);
           setGlobalScannerOpen(true);
+        }}
+        onManageSubItems={(parentItem) => {
+          setActiveLocationSpot(null);
+          setSubItemsManagingParent(parentItem);
+        }}
+      />
+
+      {/* Unterartikel / Kisten-Inhalt verwalten Modal */}
+      <SubItemsModal
+        parentItem={
+          subItemsManagingParent
+            ? items.find((i) => i.id === subItemsManagingParent.id) || subItemsManagingParent
+            : null
+        }
+        items={items}
+        onClose={() => setSubItemsManagingParent(null)}
+        onAddSubItems={(parentItem, newSubs) => {
+          if (onAddSubItems) {
+            onAddSubItems(parentItem, newSubs);
+            setExpandedBoxIds((prev) => ({ ...prev, [parentItem.id]: true }));
+          }
+        }}
+        onAssignExistingItemToParent={(itemId, parentItem) => {
+          if (onAssignItemToParent) {
+            onAssignItemToParent(itemId, parentItem);
+            if (parentItem) {
+              setExpandedBoxIds((prev) => ({ ...prev, [parentItem.id]: true }));
+            }
+          }
+        }}
+        onDeleteSubItem={onDeleteItem}
+        onChangeParentLocationRequest={(parentItem) => {
+          setSubItemsManagingParent(null);
+          setLocationEditingItem(parentItem);
         }}
       />
     </div>

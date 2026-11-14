@@ -36,6 +36,7 @@ import {
   ArrowLeft,
   ShieldAlert,
   MapPin,
+  Box,
 } from 'lucide-react';
 import { QRCodeSVG } from 'qrcode.react';
 import {
@@ -92,6 +93,7 @@ import {
 import { QrScannerModal } from './QrScannerModal';
 import { LocationAssignmentModal } from './LocationAssignmentModal';
 import { LabelSizeOption, ShelfQrPrintManager } from './ShelfQrPrintManager';
+import { SubItemsModal } from './SubItemsModal';
 
 interface AdminViewProps {
   items: InventoryItem[];
@@ -109,6 +111,8 @@ interface AdminViewProps {
   ) => void;
   onUpsertItem: (item: InventoryItem) => void;
   onUpdateItemLocation?: (itemId: string, location?: string) => void;
+  onAddSubItems?: (parentItem: InventoryItem, newSubItems: InventoryItem[]) => void;
+  onAssignItemToParent?: (itemId: string, parentItem: InventoryItem | null) => void;
   onDeleteItem: (itemId: string) => void;
   onBulkImportItems: (
     newItems: InventoryItem[],
@@ -132,6 +136,8 @@ export const AdminView: React.FC<AdminViewProps> = ({
   onSaveInitialInventory,
   onUpsertItem,
   onUpdateItemLocation,
+  onAddSubItems,
+  onAssignItemToParent,
   onDeleteItem,
   onBulkImportItems,
   onUpdateSettings,
@@ -165,6 +171,7 @@ export const AdminView: React.FC<AdminViewProps> = ({
   const [adminQuickSpotItem, setAdminQuickSpotItem] = useState<InventoryItem | null>(null);
   const [adminSelectedSpot, setAdminSelectedSpot] = useState<StorageLocationSpot | null>(null);
   const [adminSpotScannerOpen, setAdminSpotScannerOpen] = useState(false);
+  const [adminSubItemsParent, setAdminSubItemsParent] = useState<InventoryItem | null>(null);
   const [newMemberName, setNewMemberName] = useState('');
   const [memberPasswordDrafts, setMemberPasswordDrafts] = useState<Record<string, string>>({});
   const [copiedCredentials, setCopiedCredentials] = useState(false);
@@ -198,6 +205,7 @@ export const AdminView: React.FC<AdminViewProps> = ({
     minStock: string;
     targetStock: string;
     location: string;
+    parentItemId: string;
     expiryDate: string;
     aliases: string;
   }>({
@@ -212,6 +220,7 @@ export const AdminView: React.FC<AdminViewProps> = ({
     minStock: '2',
     targetStock: '5',
     location: '',
+    parentItemId: '',
     expiryDate: '',
     aliases: '',
   });
@@ -853,6 +862,7 @@ export const AdminView: React.FC<AdminViewProps> = ({
       minStock: formatGermanNumber(item.minStock),
       targetStock: item.targetStock !== undefined ? formatGermanNumber(item.targetStock) : '',
       location: item.location || '',
+      parentItemId: item.parentItemId || '',
       expiryDate: item.expiryDate || '',
       aliases: item.aliases.join(', '),
     });
@@ -875,6 +885,7 @@ export const AdminView: React.FC<AdminViewProps> = ({
       minStock: '1',
       targetStock: '4',
       location: '',
+      parentItemId: '',
       expiryDate: '',
       aliases: '',
     });
@@ -935,6 +946,7 @@ export const AdminView: React.FC<AdminViewProps> = ({
         ? roundStock(Math.max(0, parseFloat(itemForm.targetStock.replace(',', '.')) || 0))
         : undefined,
       location: itemForm.location.trim() || undefined,
+      parentItemId: itemForm.parentItemId || undefined,
       expiryDate: itemForm.expiryDate.trim()
         ? normalizeExpiryDate(itemForm.expiryDate.trim())
         : undefined,
@@ -1890,6 +1902,50 @@ export const AdminView: React.FC<AdminViewProps> = ({
                 </div>
               </div>
 
+              {/* Optional: Ist dieser Artikel ein Unterartikel in einer Kiste / einem Überartikel? */}
+              <div>
+                <div className="flex items-center justify-between mb-1">
+                  <label className="text-xs text-slate-300 flex items-center gap-1.5">
+                    <Box className="w-3.5 h-3.5 text-amber-400" />
+                    <span>Liegt als Unterartikel in Kiste / Überartikel (optional)</span>
+                  </label>
+                  {editingItem && (
+                    <button
+                      type="button"
+                      onClick={() => setAdminSubItemsParent(editingItem)}
+                      className="text-[11px] font-semibold text-amber-300 hover:underline cursor-pointer"
+                    >
+                      + Unterartikel in „{editingItem.name}“ verwalten
+                    </button>
+                  )}
+                </div>
+                <select
+                  value={itemForm.parentItemId}
+                  onChange={(e) => {
+                    const pid = e.target.value;
+                    const parentObj = items.find((i) => i.id === pid);
+                    setItemForm((prev) => ({
+                      ...prev,
+                      parentItemId: pid,
+                      location: parentObj?.location || prev.location,
+                    }));
+                  }}
+                  className="w-full px-3 py-2 rounded-xl bg-slate-950 border border-slate-700 text-xs sm:text-sm text-white"
+                >
+                  <option value="">
+                    — Eigenständiger Artikel / Eigene Kiste (kein Überartikel) —
+                  </option>
+                  {items
+                    .filter((i) => (!editingItem || i.id !== editingItem.id) && !i.parentItemId)
+                    .map((p) => (
+                      <option key={p.id} value={p.id}>
+                        In Kiste: {p.name}
+                        {p.location ? ` (${p.location})` : ''}
+                      </option>
+                    ))}
+                </select>
+              </div>
+
               <div>
                 <label className="block text-xs text-slate-300 mb-1">
                   Suchbegriffe / Synonyme für Textblock-Erkennung (kommagetrennt)
@@ -2029,6 +2085,10 @@ export const AdminView: React.FC<AdminViewProps> = ({
                   })
                   .map((item) => {
                     const catObj = activeCategories.find((c) => c.id === item.category);
+                    const subItemsCount = items.filter((s) => s.parentItemId === item.id).length;
+                    const parentObj = item.parentItemId
+                      ? items.find((p) => p.id === item.parentItemId)
+                      : undefined;
                     return (
                       <div
                         key={item.id}
@@ -2037,11 +2097,28 @@ export const AdminView: React.FC<AdminViewProps> = ({
                         <div className="min-w-0">
                           <div className="flex flex-wrap items-center gap-2">
                             <span className="font-semibold text-sm text-white truncate">
-                              {item.name}
+                              {parentObj ? `↳ ${item.name}` : item.name}
                             </span>
                             <span className="text-[10px] px-2 py-0.5 rounded-full bg-slate-800 text-sky-300 border border-slate-700">
                               {catObj?.shortLabel || catObj?.label || item.categoryLabel || item.category}
                             </span>
+                            {subItemsCount > 0 && (
+                              <button
+                                type="button"
+                                onClick={() => setAdminSubItemsParent(item)}
+                                className="inline-flex items-center gap-1 text-[10px] font-bold px-2 py-0.5 rounded-full bg-amber-500/20 hover:bg-amber-500/30 text-amber-300 border border-amber-500/40 cursor-pointer"
+                                title="Unterartikel in dieser Kiste anzeigen / bearbeiten"
+                              >
+                                <Box className="w-3 h-3 text-amber-400" />
+                                <span>Kiste ({subItemsCount} Unterartikel)</span>
+                              </button>
+                            )}
+                            {parentObj && (
+                              <span className="inline-flex items-center gap-1 text-[10px] font-medium px-2 py-0.5 rounded-full bg-amber-500/10 text-amber-200 border border-amber-500/30">
+                                <Box className="w-3 h-3 text-amber-400" />
+                                <span>In: {parentObj.name}</span>
+                              </span>
+                            )}
                             {item.expiryDate && (() => {
                               const status = getExpiryStatus(item.expiryDate);
                               const formatted = formatExpiryDate(item.expiryDate);
@@ -2083,6 +2160,14 @@ export const AdminView: React.FC<AdminViewProps> = ({
                           </div>
                         </div>
                         <div className="flex items-center gap-1.5 shrink-0">
+                          <button
+                            type="button"
+                            onClick={() => setAdminSubItemsParent(item)}
+                            className="p-2 rounded-lg bg-slate-800 hover:bg-slate-700 text-amber-300 cursor-pointer"
+                            title="Unterartikel / Kisten-Inhalt verwalten (z. B. 15 Artikel in dieser Kiste)"
+                          >
+                            <Box className="w-4 h-4" />
+                          </button>
                           <button
                             type="button"
                             onClick={() => setAdminQuickSpotItem(item)}
@@ -3262,6 +3347,51 @@ export const AdminView: React.FC<AdminViewProps> = ({
         onSwitchSpotRequest={() => {
           setAdminSelectedSpot(null);
           setAdminSpotScannerOpen(true);
+        }}
+        onManageSubItems={(parentItem) => {
+          setAdminSelectedSpot(null);
+          setAdminSubItemsParent(parentItem);
+        }}
+      />
+
+      {/* Unterartikel / Kisten-Inhalt verwalten Modal im Admin-Bereich */}
+      <SubItemsModal
+        parentItem={
+          adminSubItemsParent
+            ? items.find((i) => i.id === adminSubItemsParent.id) || adminSubItemsParent
+            : null
+        }
+        items={items}
+        onClose={() => setAdminSubItemsParent(null)}
+        onAddSubItems={(parentItem, newSubs) => {
+          if (onAddSubItems) {
+            onAddSubItems(parentItem, newSubs);
+          } else {
+            newSubs.forEach((s) => onUpsertItem(s));
+          }
+          showBanner(
+            `${newSubs.length} Unterartikel in „${parentItem.name}“ angelegt (gleicher Stellplatz).`
+          );
+        }}
+        onAssignExistingItemToParent={(itemId, parentItem) => {
+          if (onAssignItemToParent) {
+            onAssignItemToParent(itemId, parentItem);
+          } else {
+            const target = items.find((i) => i.id === itemId);
+            if (target) {
+              onUpsertItem({
+                ...target,
+                parentItemId: parentItem ? parentItem.id : undefined,
+                location: parentItem ? parentItem.location || target.location : target.location,
+                updatedAt: new Date().toISOString(),
+              });
+            }
+          }
+        }}
+        onDeleteSubItem={onDeleteItem}
+        onChangeParentLocationRequest={(parentItem) => {
+          setAdminSubItemsParent(null);
+          setAdminQuickSpotItem(parentItem);
         }}
       />
     </div>

@@ -1,5 +1,6 @@
 import React, { useMemo, useState } from 'react';
 import {
+  Box,
   Check,
   Filter,
   MapPin,
@@ -24,6 +25,7 @@ interface LocationAssignmentModalProps {
   onAssignItemToSpot: (itemId: string, spot: StorageLocationSpot | null) => void;
   onFilterBySpot?: (spot: StorageLocationSpot) => void;
   onSwitchSpotRequest?: () => void;
+  onManageSubItems?: (parentItem: InventoryItem) => void;
 }
 
 export const LocationAssignmentModal: React.FC<LocationAssignmentModalProps> = ({
@@ -33,12 +35,21 @@ export const LocationAssignmentModal: React.FC<LocationAssignmentModalProps> = (
   onAssignItemToSpot,
   onFilterBySpot,
   onSwitchSpotRequest,
+  onManageSubItems,
 }) => {
   const [searchQuery, setSearchQuery] = useState('');
 
+  // Gruppiere Hauptartikel / Kisten auf diesem Stellplatz (Unterartikel hängen an ihrer Kiste)
   const assignedItems = useMemo(() => {
     if (!spot) return [];
-    return items.filter((item) => itemMatchesLocationSpot(item.location, spot));
+    return items.filter(
+      (item) =>
+        itemMatchesLocationSpot(item.location, spot) &&
+        (!item.parentItemId ||
+          !items.some(
+            (p) => p.id === item.parentItemId && itemMatchesLocationSpot(p.location, spot)
+          ))
+    );
   }, [items, spot]);
 
   const otherItems = useMemo(() => {
@@ -46,6 +57,8 @@ export const LocationAssignmentModal: React.FC<LocationAssignmentModalProps> = (
     const q = searchQuery.trim().toLowerCase();
     return items.filter((item) => {
       if (itemMatchesLocationSpot(item.location, spot)) return false;
+      // Unterartikel ohne Suche nicht doppelt auflisten, da sie über ihre Kiste verschoben werden
+      if (!q && item.parentItemId) return false;
       if (!q) return true;
       return (
         item.name.toLowerCase().includes(q) ||
@@ -139,31 +152,69 @@ export const LocationAssignmentModal: React.FC<LocationAssignmentModalProps> = (
               Diesem Stellplatz ist noch kein Artikel zugewiesen. Tippe unten einfach auf die Artikel, die hier im Regal stehen!
             </div>
           ) : (
-            <div className="space-y-1.5 max-h-44 overflow-y-auto pr-1">
-              {assignedItems.map((item) => (
-                <div
-                  key={item.id}
-                  className="p-2.5 rounded-xl bg-emerald-500/10 border border-emerald-500/30 flex items-center justify-between gap-2"
-                >
-                  <div className="min-w-0">
-                    <div className="font-semibold text-xs sm:text-sm text-white truncate">
-                      {item.name}
-                    </div>
-                    <div className="text-[11px] text-emerald-300">
-                      Bestand: {formatStockDisplay(item).primaryText}
-                    </div>
-                  </div>
-                  <button
-                    type="button"
-                    onClick={() => onAssignItemToSpot(item.id, null)}
-                    className="px-2.5 py-1.5 rounded-lg bg-slate-900 hover:bg-rose-500/20 text-slate-300 hover:text-rose-300 border border-slate-700 text-xs flex items-center gap-1 cursor-pointer shrink-0"
-                    title="Stellplatz-Zuweisung entfernen"
+            <div className="space-y-1.5 max-h-48 overflow-y-auto pr-1">
+              {assignedItems.map((item) => {
+                const subItems = items.filter((s) => s.parentItemId === item.id);
+                return (
+                  <div
+                    key={item.id}
+                    className="p-2.5 rounded-xl bg-emerald-500/10 border border-emerald-500/30 space-y-1.5"
                   >
-                    <Trash2 className="w-3.5 h-3.5" />
-                    <span>Lösen</span>
-                  </button>
-                </div>
-              ))}
+                    <div className="flex items-center justify-between gap-2">
+                      <div className="min-w-0">
+                        <div className="flex items-center gap-1.5 flex-wrap">
+                          <span className="font-semibold text-xs sm:text-sm text-white truncate">
+                            {item.name}
+                          </span>
+                          {subItems.length > 0 && (
+                            <span className="inline-flex items-center gap-1 text-[10px] font-bold px-2 py-0.5 rounded-full bg-amber-500/20 text-amber-300 border border-amber-500/40">
+                              <Box className="w-3 h-3" />
+                              <span>Kiste ({subItems.length} Unterartikel)</span>
+                            </span>
+                          )}
+                        </div>
+                        <div className="text-[11px] text-emerald-300">
+                          Bestand: {formatStockDisplay(item).primaryText}
+                        </div>
+                      </div>
+                      <div className="flex items-center gap-1.5 shrink-0">
+                        {onManageSubItems && (
+                          <button
+                            type="button"
+                            onClick={() => onManageSubItems(item)}
+                            className="px-2 py-1.5 rounded-lg bg-slate-900 hover:bg-slate-800 text-amber-300 border border-amber-500/30 text-xs flex items-center gap-1 cursor-pointer"
+                            title="Unterartikel in dieser Kiste ansehen oder anlegen"
+                          >
+                            <Box className="w-3.5 h-3.5" />
+                            <span>Inhalt ({subItems.length})</span>
+                          </button>
+                        )}
+                        <button
+                          type="button"
+                          onClick={() => onAssignItemToSpot(item.id, null)}
+                          className="px-2.5 py-1.5 rounded-lg bg-slate-900 hover:bg-rose-500/20 text-slate-300 hover:text-rose-300 border border-slate-700 text-xs flex items-center gap-1 cursor-pointer"
+                          title="Stellplatz-Zuweisung entfernen"
+                        >
+                          <Trash2 className="w-3.5 h-3.5" />
+                          <span>Lösen</span>
+                        </button>
+                      </div>
+                    </div>
+                    {subItems.length > 0 && (
+                      <div className="pl-2.5 border-l-2 border-amber-500/40 text-[11px] text-slate-300 flex flex-wrap gap-1">
+                        {subItems.map((sub) => (
+                          <span
+                            key={sub.id}
+                            className="px-2 py-0.5 rounded bg-slate-950/90 border border-slate-800 text-[10px] text-slate-200"
+                          >
+                            {sub.name} ({formatStockDisplay(sub).primaryText})
+                          </span>
+                        ))}
+                      </div>
+                    )}
+                  </div>
+                );
+              })}
             </div>
           )}
         </div>
@@ -198,14 +249,23 @@ export const LocationAssignmentModal: React.FC<LocationAssignmentModalProps> = (
             ) : (
               otherItems.map((item) => {
                 const currentParsed = parseStorageLocationInput(item.location);
+                const subCount = items.filter((s) => s.parentItemId === item.id).length;
                 return (
                   <div
                     key={item.id}
                     className="p-2.5 rounded-xl bg-slate-950 border border-slate-800 hover:border-slate-700 flex items-center justify-between gap-2"
                   >
                     <div className="min-w-0">
-                      <div className="font-semibold text-xs sm:text-sm text-white truncate">
-                        {item.name}
+                      <div className="flex items-center gap-1.5 flex-wrap">
+                        <span className="font-semibold text-xs sm:text-sm text-white truncate">
+                          {item.name}
+                        </span>
+                        {subCount > 0 && (
+                          <span className="inline-flex items-center gap-1 text-[10px] font-semibold px-1.5 py-0.5 rounded bg-amber-500/20 text-amber-300 border border-amber-500/30">
+                            <Box className="w-3 h-3" />
+                            <span>inkl. {subCount} Unterart.</span>
+                          </span>
+                        )}
                       </div>
                       <div className="text-[11px] text-slate-400 truncate">
                         Bestand: {formatStockDisplay(item).primaryText}

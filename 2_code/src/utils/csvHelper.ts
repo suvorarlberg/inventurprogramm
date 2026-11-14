@@ -43,6 +43,7 @@ export function exportInventoryToCsv(
     'Mindestbestand',
     'Sollbestand',
     'Lagerort',
+    'In Kiste / Überartikel',
     'Ablaufdatum',
     'Leihgerät (Rückgabepflicht)',
     'Teilmengen erlaubt',
@@ -53,6 +54,9 @@ export function exportInventoryToCsv(
     const display = formatStockDisplay(item);
     const catObj = categories.find((c) => c.id === item.category);
     const categoryLabel = catObj?.label || item.categoryLabel || item.category;
+    const parentObj = item.parentItemId
+      ? items.find((p) => p.id === item.parentItemId)
+      : undefined;
 
     return [
       item.name,
@@ -64,7 +68,8 @@ export function exportInventoryToCsv(
       item.subUnitsPerUnit || '',
       formatGermanNumber(item.minStock),
       item.targetStock !== undefined ? formatGermanNumber(item.targetStock) : '',
-      item.location || '',
+      item.location || parentObj?.location || '',
+      parentObj?.name || '',
       item.expiryDate || '',
       item.isReturnable ? 'Ja' : 'Nein',
       item.allowFractions ? 'Ja' : 'Nein',
@@ -239,6 +244,7 @@ export function parseInventoryCsv(
   const idxMinStock = headers.findIndex((h) => h.includes('mindest'));
   const idxTargetStock = headers.findIndex((h) => h.includes('soll') || h.includes('ziel'));
   const idxLocation = headers.findIndex((h) => h.includes('lagerort') || h.includes('ort') || h.includes('regal'));
+  const idxParent = headers.findIndex((h) => h.includes('in kiste') || h.includes('überartikel') || h.includes('ueberartikel') || h.includes('parent'));
   const idxExpiry = headers.findIndex((h) => h.includes('ablauf') || h.includes('mhd') || h.includes('verfall') || h.includes('haltbar'));
   const idxReturnable = headers.findIndex((h) => h.includes('leih') || h.includes('rückgabe'));
   const idxFractions = headers.findIndex((h) => h.includes('teilmenge') || h.includes('angebrochen'));
@@ -316,6 +322,10 @@ export function parseInventoryCsv(
     const targetStock = rawTarget ? roundStock(Math.max(0, parseFloat(rawTarget) || 0)) : undefined;
 
     const location = idxLocation >= 0 ? cols[idxLocation]?.trim() || undefined : undefined;
+    const rawParentName = idxParent >= 0 ? cols[idxParent]?.trim() || undefined : undefined;
+    const matchedParent = rawParentName
+      ? updatedList.find((p) => p.name.toLowerCase() === rawParentName.toLowerCase())
+      : undefined;
     const rawExpiry = idxExpiry >= 0 ? cols[idxExpiry]?.trim() : undefined;
     const parsedExpiry = rawExpiry ? normalizeExpiryDate(rawExpiry) : undefined;
 
@@ -353,7 +363,11 @@ export function parseInventoryCsv(
         subUnitsPerUnit,
         minStock,
         targetStock,
-        location: location ?? updatedList[existingIdx].location,
+        location: location ?? matchedParent?.location ?? updatedList[existingIdx].location,
+        parentItemId:
+          idxParent >= 0
+            ? matchedParent?.id
+            : updatedList[existingIdx].parentItemId,
         expiryDate,
         isReturnable,
         allowFractions,
@@ -375,7 +389,8 @@ export function parseInventoryCsv(
         quantity,
         minStock,
         targetStock,
-        location,
+        location: location ?? matchedParent?.location,
+        parentItemId: matchedParent?.id,
         expiryDate: parsedExpiry,
         aliases,
         updatedAt: now,

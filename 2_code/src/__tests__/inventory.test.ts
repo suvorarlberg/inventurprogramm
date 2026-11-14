@@ -32,6 +32,7 @@ import {
   parseStorageLocationInput,
   SHELF_DEFINITIONS,
 } from '../utils/storageLocations';
+import { parseBulkSubItemLine } from '../components/SubItemsModal';
 
 const now = new Date().toISOString();
 
@@ -353,8 +354,8 @@ describe('Stellplatz- & QR-Code-System (GER, TMR, TSR, MR mit Ebenen 0–3 & 20 
   it('plant alle 4 Regale mit je 4 Ebenen (0, 1, 2, 3) und 20 Plätzen auf Vorrat ein (320 Plätze)', () => {
     expect(SHELF_DEFINITIONS.map((s) => s.id)).toEqual(['GER', 'TMR', 'TSR', 'MR']);
     expect(ALL_PREPLANNED_LOCATIONS.length).toBe(4 * 4 * 20);
-    expect(buildLocationCode('GER', 0, 1)).toBe('GER-E0-P01');
-    expect(buildLocationCode('MR', 3, 20)).toBe('MR-E3-P20');
+    expect(buildLocationCode('GER', 0, 1)).toBe('GER-001');
+    expect(buildLocationCode('MR', 3, 20)).toBe('MR-320');
   });
 
   it('liefert eine Standard-Druckvorauswahl von ca. 50 Etiketten (52 Stück)', () => {
@@ -364,23 +365,55 @@ describe('Stellplatz- & QR-Code-System (GER, TMR, TSR, MR mit Ebenen 0–3 & 20 
   });
 
   it('erkennt Stellplätze aus QR-URLs, Kurzcodes und Volltext-Lagerorten zuverlässig', () => {
-    const fromCode = parseStorageLocationInput('GER-E0-P01');
-    expect(fromCode?.code).toBe('GER-E0-P01');
+    const fromCode = parseStorageLocationInput('GER-001');
+    expect(fromCode?.code).toBe('GER-001');
     expect(fromCode?.shelfName).toBe('Getränke- und Essensregal');
     expect(fromCode?.level).toBe(0);
     expect(fromCode?.spot).toBe(1);
 
-    const qrUrl = buildLocationQrPayload(DEFAULT_SETTINGS, 'TMR-E2-P15', 'url');
+    const qrUrl = buildLocationQrPayload(DEFAULT_SETTINGS, 'TMR-215', 'url');
     const fromUrl = parseStorageLocationInput(qrUrl);
-    expect(fromUrl?.code).toBe('TMR-E2-P15');
+    expect(fromUrl?.code).toBe('TMR-215');
     expect(fromUrl?.shelfName).toBe('Trainermaterialregal');
 
     const fromFlexible = parseStorageLocationInput('tsr-3-7');
-    expect(fromFlexible?.code).toBe('TSR-E3-P07');
+    expect(fromFlexible?.code).toBe('TSR-307');
 
     const fromFullDisplay = parseStorageLocationInput(fromCode!.fullDisplayLabel);
-    expect(fromFullDisplay?.code).toBe('GER-E0-P01');
+    expect(fromFullDisplay?.code).toBe('GER-001');
     expect(itemMatchesLocationSpot(fromCode!.fullDisplayLabel, fromCode!)).toBe(true);
+  });
+
+  it('legt Unterartikel in einer Kiste an und vererbt automatisch den Stellplatz der Kiste', () => {
+    const parentBox: InventoryItem = {
+      id: 'box-moderation',
+      name: 'Moderationskiste',
+      category: 'equipment',
+      unit: 'Kiste',
+      allowFractions: false,
+      isReturnable: true,
+      quantity: 1,
+      minStock: 1,
+      location: 'TMR-E1-P04 • Trainermaterialregal (Ebene 1, Platz 04)',
+      aliases: ['moderationskiste'],
+      updatedAt: now,
+    };
+
+    const sub1 = parseBulkSubItemLine('10 Stück Edding schwarz', parentBox, 0);
+    const sub2 = parseBulkSubItemLine('3 Packung Moderationskarten', parentBox, 1);
+
+    expect(sub1).not.toBeNull();
+    expect(sub1?.name).toBe('Edding schwarz');
+    expect(sub1?.quantity).toBe(10);
+    expect(sub1?.unit).toBe('Stück');
+    expect(sub1?.parentItemId).toBe('box-moderation');
+    expect(sub1?.location).toBe(parentBox.location);
+
+    expect(sub2?.name).toBe('Moderationskarten');
+    expect(sub2?.quantity).toBe(3);
+    expect(sub2?.unit).toBe('Packung');
+    expect(sub2?.parentItemId).toBe('box-moderation');
+    expect(sub2?.location).toBe(parentBox.location);
   });
 });
 
