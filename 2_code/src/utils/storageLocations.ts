@@ -108,7 +108,7 @@ export function formatSpotNumber(spot: number): string {
 }
 
 export function buildLocationCode(shelfId: ShelfId, level: number, spot: number): string {
-  return `${shelfId}-E${level}-P${formatSpotNumber(spot)}`;
+  return `${shelfId}-${level}${formatSpotNumber(spot)}`;
 }
 
 export function getShelfDefinition(shelfId: string): ShelfDefinition | undefined {
