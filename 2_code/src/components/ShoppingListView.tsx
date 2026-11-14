@@ -17,8 +17,10 @@ import {
   formatStockDisplay,
   getDaysUntilExpiry,
   getExpiryStatus,
+  isItemLowStock,
   pluralizeUnit,
   roundStock,
+  SPICE_FILL_CONFIG,
 } from '../utils/units';
 
 interface ShoppingListViewProps {
@@ -30,11 +32,13 @@ interface ShoppingListViewProps {
     eventName?: string;
     note?: string;
   }) => void;
+  canRestock?: boolean;
 }
 
 export const ShoppingListView: React.FC<ShoppingListViewProps> = ({
   items,
   onExecuteBooking,
+  canRestock = true,
 }) => {
   const [includeTargetRefill, setIncludeTargetRefill] = useState(false);
   const [customOrderAmounts, setCustomOrderAmounts] = useState<Record<string, number>>({});
@@ -44,21 +48,24 @@ export const ShoppingListView: React.FC<ShoppingListViewProps> = ({
   const shoppingItems = useMemo(() => {
     return items
       .filter((item) => {
-        if (item.quantity < item.minStock) return true;
+        if (isItemLowStock(item)) return true;
         if (includeTargetRefill && item.targetStock && item.quantity < item.targetStock) {
           return true;
         }
         return false;
       })
       .map((item) => {
-        const target = item.targetStock && item.targetStock > item.minStock ? item.targetStock : item.minStock;
+        const target =
+          item.targetStock && item.targetStock > item.minStock
+            ? item.targetStock
+            : Math.max(1, item.minStock);
         const suggested = Math.max(1, Math.ceil(roundStock(target - item.quantity)));
         const orderAmount =
           customOrderAmounts[item.id] !== undefined ? customOrderAmounts[item.id] : suggested;
 
         return {
           item,
-          isCritical: item.quantity < item.minStock,
+          isCritical: isItemLowStock(item),
           suggestedAmount: suggested,
           orderAmount,
         };
@@ -157,14 +164,16 @@ export const ShoppingListView: React.FC<ShoppingListViewProps> = ({
               )}
             </button>
 
-            <button
-              type="button"
-              onClick={handleBookRestockFromList}
-              className="flex items-center gap-2 px-4 py-2.5 rounded-xl bg-emerald-500 hover:bg-emerald-400 text-slate-950 text-xs sm:text-sm font-bold shadow-lg shadow-emerald-500/20 transition cursor-pointer"
-            >
-              <PackagePlus className="w-4 h-4 stroke-[2.5]" />
-              <span>Alles als eingekauft in den Keller buchen</span>
-            </button>
+            {canRestock && (
+              <button
+                type="button"
+                onClick={handleBookRestockFromList}
+                className="flex items-center gap-2 px-4 py-2.5 rounded-xl bg-emerald-500 hover:bg-emerald-400 text-slate-950 text-xs sm:text-sm font-bold shadow-lg shadow-emerald-500/20 transition cursor-pointer"
+              >
+                <PackagePlus className="w-4 h-4 stroke-[2.5]" />
+                <span>Alles als eingekauft in den Keller buchen</span>
+              </button>
+            )}
           </div>
         )}
       </div>
@@ -193,10 +202,34 @@ export const ShoppingListView: React.FC<ShoppingListViewProps> = ({
                 <div className="space-y-1">
                   <div className="flex flex-wrap items-center gap-2">
                     <span className="font-bold text-white text-sm sm:text-base">{item.name}</span>
+                    {item.unitProfile === 'spice_bulk' && (
+                      <span
+                        className={`inline-flex items-center gap-1 text-[10px] font-semibold px-2 py-0.5 rounded-full border ${
+                          item.openPackLevel
+                            ? SPICE_FILL_CONFIG[item.openPackLevel].badgeClass
+                            : 'bg-slate-800 text-slate-300 border-slate-700'
+                        }`}
+                      >
+                        <span
+                          className={`w-1.5 h-1.5 rounded-full ${
+                            item.openPackLevel
+                              ? SPICE_FILL_CONFIG[item.openPackLevel].dotClass
+                              : 'bg-slate-400'
+                          }`}
+                        />
+                        <span>
+                          {item.openPackLevel
+                            ? `Anbruch: ${SPICE_FILL_CONFIG[item.openPackLevel].short}`
+                            : 'Anbruch: Keine Angabe'}
+                        </span>
+                      </span>
+                    )}
                     {isCritical && (
                       <span className="inline-flex items-center gap-1 text-[10px] font-semibold px-2 py-0.5 rounded-full bg-amber-500/20 text-amber-300 border border-amber-500/40">
                         <AlertTriangle className="w-3 h-3" />
-                        Unter Mindestbestand ({formatGermanNumber(item.minStock)} {item.unit})
+                        {item.unitProfile === 'spice_bulk'
+                          ? 'Nachkauf empfohlen'
+                          : `Unter Mindestbestand (${formatGermanNumber(item.minStock)} ${item.unit})`}
                       </span>
                     )}
                     {item.expiryDate && (() => {

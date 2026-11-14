@@ -1,5 +1,8 @@
 export type CategoryId = string;
 
+export type UnitProfile = 'beverage' | 'piece' | 'spice_bulk' | 'consumable';
+export type SpiceFillLevel = 'full' | 'half' | 'low' | 'empty';
+
 export interface CategoryInfo {
   id: CategoryId;
   label: string;
@@ -8,6 +11,14 @@ export interface CategoryInfo {
   color: string;
   /** Standard-Einstellung für neue Artikel dieser Kategorie: Leihgerät mit Rückgabepflicht? */
   defaultReturnable?: boolean;
+  /** Standard-Einstellung: Sollen Artikel dieser Kategorie ein MHD (Ablaufdatum) haben? */
+  requiresExpiryDate?: boolean;
+  /** Standard-Einstellung: Sind angebrochene Einheiten (Teilmengen) erlaubt? */
+  defaultAllowFractions?: boolean;
+  /** Standard-Haupteinheit für neue Artikel dieser Kategorie (z. B. "Kiste", "Stück") */
+  defaultUnit?: string;
+  /** Standard-Einheitsprofil für Artikel dieser Kategorie */
+  defaultUnitProfile?: UnitProfile;
 }
 
 export interface InventoryItem {
@@ -16,7 +27,11 @@ export interface InventoryItem {
   category: CategoryId;
   /** Lesbarer Name der Kategorie (für automatischen Cloud-Sync eigener Kategorien) */
   categoryLabel?: string;
-  /** Haupteinheit, z. B. "Kiste", "Rolle", "Packung", "Stück", "Garnitur" */
+  /** Einheitsprofil: Getränk (Gebinde/Flaschen), Stückgut (ganze Zahlen), Gewürze (Füllstands-Ampel) oder Verbrauch */
+  unitProfile?: UnitProfile;
+  /** Füllstand der angebrochenen Packung bei Gewürzen / Schüttgut ('full' | 'half' | 'low' | 'empty') */
+  openPackLevel?: SpiceFillLevel;
+  /** Haupteinheit, z. B. "Kiste", "Rolle", "Packung", "Stück", "Garnitur", "Dose" */
   unit: string;
   /** Optionale Untereinheit für Gebinde, z. B. "Flasche" bei 1 Kiste = 20 Flaschen */
   subUnit?: string;
@@ -26,7 +41,7 @@ export interface InventoryItem {
   allowFractions: boolean;
   /** Muss nach Nutzung wieder zurückgebracht werden (z. B. Werkzeug, Technik, Garnituren) */
   isReturnable: boolean;
-  /** Aktueller Bestand in der Haupteinheit */
+  /** Aktueller Bestand in der Haupteinheit (bei Gewürzen: Anzahl geschlossener Vorratspackungen) */
   quantity: number;
   /** Mindestbestand für Warnung & Einkaufsliste (in Haupteinheit) */
   minStock: number;
@@ -97,13 +112,34 @@ export interface ParsedTextItem {
   confidence: 'high' | 'medium' | 'low';
 }
 
+export interface MemberPermissions {
+  /** Darf den Kellerbestand / die Artikel-Übersicht sehen */
+  canViewInventory: boolean;
+  /** Darf Kellerlisten / Event-Planungen sehen & bearbeiten */
+  canViewKellerlisten: boolean;
+  /** Darf das Buchungs-Logbuch / die Historie einsehen */
+  canViewHistory: boolean;
+  /** Darf die Einkaufsliste einsehen */
+  canViewShoppingList: boolean;
+  /** Darf Entnahmen und Rückgaben ein- und ausbuchen */
+  canBook: boolean;
+  /** Darf Nachbestellungen / Einkäufe / Befüllungen einbuchen */
+  canRestock: boolean;
+  /** Darf eine Erstinventur / Bestandszählung durchführen */
+  canDoInitialInventory: boolean;
+}
+
 export interface MemberAccount {
-  /** Vollständiger Name der Person (z. B. "Simon Märker" oder "Celil-Kaan Beler") */
+  /** Vollständiger Name der Person (z. B. "Simon Märker" oder "Admin") */
   name: string;
-  /** Login-Benutzername (z. B. "simon.maerker@schuelerunion.at" bzw. "celil.kaan.beler@schuelerunion.at") */
+  /** Login-Benutzername (z. B. "simon.maerker@schuelerunion.at" oder "admin@schuelerunion.at") */
   username: string;
   /** Zufällig vergebenes oder vom Admin angepasstes Passwort */
   password: string;
+  /** Ist dieser Account ein vollwertiger Admin-Account? */
+  isAdmin?: boolean;
+  /** Individuelle Berechtigungen / freigeschaltete Features für diesen Account */
+  permissions?: MemberPermissions;
 }
 
 export interface KellerlisteItem {
@@ -149,10 +185,18 @@ export interface TwoFactorConfig {
 export interface AppSettings {
   clubName: string;
   adminPassword: string;
+  /** Optionaler Login-Benutzername des Admin-Accounts (Standard: "admin@schuelerunion.at") */
+  adminUsername?: string;
   /** E-Mail-Adresse für die 2-Faktor-Authentifizierung (2FA) zum Ändern des Admin-Passworts */
   adminEmail?: string;
   /** 2-Faktor-Authentifizierung per Authenticator-App (TOTP) + 10 Ersatzcodes */
   twoFactor?: TwoFactorConfig;
+  /** Direkte TOTP-Flags (kompatibel mit SiP) */
+  totpEnabled?: boolean;
+  totpSecret?: string;
+  totpBackupCodes?: string[];
+  /** Benutzerkonten, die den Admin-Button im Header sehen dürfen */
+  adminDashboardUsernames?: string[];
   /** Liste der erlaubten Namen für Buchungen / Entnahmen (im Admin-Menü anpassbar) */
   allowedMembers: string[];
   /** Zugangsdaten (Benutzername + Passwort) der berechtigten Personen für den App-Login */

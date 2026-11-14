@@ -32,7 +32,9 @@ import {
   CategoryId,
   InventoryItem,
   InventoryTransaction,
+  MemberPermissions,
   ParsedTextItem,
+  SpiceFillLevel,
 } from '../types';
 import { CATEGORIES, DEFAULT_ALLOWED_MEMBERS } from '../data/defaultData';
 import {
@@ -45,6 +47,7 @@ import {
   pluralizeUnit,
   roundStock,
   toPrimaryUnitQuantity,
+  SPICE_FILL_CONFIG,
 } from '../utils/units';
 import { parseFreeTextBlock, parseTextWithAI } from '../utils/textParser';
 import {
@@ -60,6 +63,7 @@ interface OpenBookingViewProps {
   transactions: InventoryTransaction[];
   settings: AppSettings;
   currentUserName: string;
+  userPermissions?: MemberPermissions;
   selectedReturnTxId: string | null;
   onClearSelectedReturnTx: () => void;
   onExecuteBooking: (params: {
@@ -72,9 +76,11 @@ interface OpenBookingViewProps {
   }) => void;
   onUpdateItemExpiry?: (itemId: string, expiryDate?: string) => void;
   onUpdateItemLocation?: (itemId: string, location?: string) => void;
+  onBulkUpdateItemLocations?: (itemIds: string[], location?: string) => void;
   onAddSubItems?: (parentItem: InventoryItem, newSubItems: InventoryItem[]) => void;
   onAssignItemToParent?: (itemId: string, parentItem: InventoryItem | null) => void;
   onDeleteItem?: (itemId: string) => void;
+  onUpdateItemSpiceLevel?: (itemId: string, level: SpiceFillLevel) => void;
   scannedLocationCode?: string | null;
   onClearScannedLocationCode?: () => void;
 }
@@ -84,18 +90,33 @@ export const OpenBookingView: React.FC<OpenBookingViewProps> = ({
   transactions,
   settings,
   currentUserName,
+  userPermissions,
   selectedReturnTxId,
   onClearSelectedReturnTx,
   onExecuteBooking,
   onUpdateItemExpiry,
   onUpdateItemLocation,
+  onBulkUpdateItemLocations,
   onAddSubItems,
   onAssignItemToParent,
   onDeleteItem,
+  onUpdateItemSpiceLevel,
   scannedLocationCode,
   onClearScannedLocationCode,
 }) => {
-  const [mode, setMode] = useState<BookingMode>('withdraw');
+  const canBook = !userPermissions || userPermissions.canBook;
+  const canRestock = !userPermissions || userPermissions.canRestock;
+  const [mode, setMode] = useState<BookingMode>(() =>
+    !canBook && canRestock ? 'restock' : 'withdraw'
+  );
+
+  useEffect(() => {
+    if (!canBook && canRestock && mode !== 'restock') {
+      setMode('restock');
+    } else if (canBook && !canRestock && mode === 'restock') {
+      setMode('withdraw');
+    }
+  }, [canBook, canRestock, mode]);
   const [inputMethod, setInputMethod] = useState<'list' | 'text'>('list');
   const [selectedCategory, setSelectedCategory] = useState<CategoryId | 'all'>('all');
   const [searchQuery, setSearchQuery] = useState('');
@@ -718,63 +739,80 @@ export const OpenBookingView: React.FC<OpenBookingViewProps> = ({
         </div>
       )}
 
-      {/* 1. Haupt-Modus-Umschalter: Entnehmen | Zurückgeben | Befüllen */}
-      <div className="bg-slate-900 border border-slate-800 rounded-2xl p-2 shadow-lg">
-        <div className="grid grid-cols-3 gap-1.5">
-          <button
-            onClick={() => {
-              setMode('withdraw');
-              setActiveReturnTxId(null);
-            }}
-            className={`flex flex-col sm:flex-row items-center justify-center gap-1.5 py-3 px-3 rounded-xl font-semibold text-xs sm:text-sm transition cursor-pointer ${
-              mode === 'withdraw'
-                ? 'bg-rose-500 text-slate-950 shadow-lg shadow-rose-500/25'
-                : 'text-slate-300 hover:bg-slate-800'
-            }`}
-          >
-            <ArrowUpRight className="w-4 h-4 sm:w-5 sm:h-5" />
-            <span>Entnehmen</span>
-          </button>
+      {!canBook && !canRestock && (
+        <div className="p-3.5 rounded-2xl bg-amber-500/15 border border-amber-500/40 text-xs text-amber-200 flex items-center gap-2.5">
+          <AlertTriangle className="w-4 h-4 text-amber-400 shrink-0" />
+          <span>
+            <strong>Nur-Lese-Ansicht:</strong> Dein Account ist für das Einsehen des Kellerbestands freigeschaltet. Ein-/Ausbuchungen und Nachbestellungen sind für deinen Account deaktiviert.
+          </span>
+        </div>
+      )}
 
-          <button
-            onClick={() => setMode('return')}
-            className={`flex flex-col sm:flex-row items-center justify-center gap-1.5 py-3 px-3 rounded-xl font-semibold text-xs sm:text-sm transition cursor-pointer ${
-              mode === 'return'
-                ? 'bg-sky-500 text-slate-950 shadow-lg shadow-sky-500/25'
-                : 'text-slate-300 hover:bg-slate-800'
-            }`}
-          >
-            <ArrowDownLeft className="w-4 h-4 sm:w-5 sm:h-5" />
-            <span>Zurückgeben</span>
-            {recentWithdrawals.length > 0 && (
-              <span
-                className={`px-1.5 py-0.2 rounded-full text-[10px] font-bold ${
-                  mode === 'return'
-                    ? 'bg-slate-950 text-sky-300'
-                    : 'bg-sky-500/20 text-sky-300'
+      {/* 1. Haupt-Modus-Umschalter: Entnehmen | Zurückgeben | Befüllen */}
+      {(canBook || canRestock) && (
+        <div className="bg-slate-900 border border-slate-800 rounded-2xl p-2 shadow-lg">
+          <div className="flex flex-wrap sm:grid sm:grid-flow-col sm:auto-cols-fr gap-1.5">
+            {canBook && (
+              <button
+                onClick={() => {
+                  setMode('withdraw');
+                  setActiveReturnTxId(null);
+                }}
+                className={`flex-1 flex flex-col sm:flex-row items-center justify-center gap-1.5 py-3 px-3 rounded-xl font-semibold text-xs sm:text-sm transition cursor-pointer ${
+                  mode === 'withdraw'
+                    ? 'bg-rose-500 text-slate-950 shadow-lg shadow-rose-500/25'
+                    : 'text-slate-300 hover:bg-slate-800'
                 }`}
               >
-                {recentWithdrawals.length}
-              </span>
+                <ArrowUpRight className="w-4 h-4 sm:w-5 sm:h-5" />
+                <span>Entnehmen</span>
+              </button>
             )}
-          </button>
 
-          <button
-            onClick={() => {
-              setMode('restock');
-              setActiveReturnTxId(null);
-            }}
-            className={`flex flex-col sm:flex-row items-center justify-center gap-1.5 py-3 px-3 rounded-xl font-semibold text-xs sm:text-sm transition cursor-pointer ${
-              mode === 'restock'
-                ? 'bg-emerald-500 text-slate-950 shadow-lg shadow-emerald-500/25'
-                : 'text-slate-300 hover:bg-slate-800'
-            }`}
-          >
-            <PackagePlus className="w-4 h-4 sm:w-5 sm:h-5" />
-            <span>Befüllen / Einkauf</span>
-          </button>
+            {canBook && (
+              <button
+                onClick={() => setMode('return')}
+                className={`flex-1 flex flex-col sm:flex-row items-center justify-center gap-1.5 py-3 px-3 rounded-xl font-semibold text-xs sm:text-sm transition cursor-pointer ${
+                  mode === 'return'
+                    ? 'bg-sky-500 text-slate-950 shadow-lg shadow-sky-500/25'
+                    : 'text-slate-300 hover:bg-slate-800'
+                }`}
+              >
+                <ArrowDownLeft className="w-4 h-4 sm:w-5 sm:h-5" />
+                <span>Zurückgeben</span>
+                {recentWithdrawals.length > 0 && (
+                  <span
+                    className={`px-1.5 py-0.2 rounded-full text-[10px] font-bold ${
+                      mode === 'return'
+                        ? 'bg-slate-950 text-sky-300'
+                        : 'bg-sky-500/20 text-sky-300'
+                    }`}
+                  >
+                    {recentWithdrawals.length}
+                  </span>
+                )}
+              </button>
+            )}
+
+            {canRestock && (
+              <button
+                onClick={() => {
+                  setMode('restock');
+                  setActiveReturnTxId(null);
+                }}
+                className={`flex-1 flex flex-col sm:flex-row items-center justify-center gap-1.5 py-3 px-3 rounded-xl font-semibold text-xs sm:text-sm transition cursor-pointer ${
+                  mode === 'restock'
+                    ? 'bg-emerald-500 text-slate-950 shadow-lg shadow-emerald-500/25'
+                    : 'text-slate-300 hover:bg-slate-800'
+                }`}
+              >
+                <PackagePlus className="w-4 h-4 sm:w-5 sm:h-5" />
+                <span>Befüllen / Einkauf (Nachbestellen)</span>
+              </button>
+            )}
+          </div>
         </div>
-      </div>
+      )}
 
       {/* Spezial-Bereich bei "Zurückgeben": Frühere Entnahme / Event auswählen */}
       {mode === 'return' && (
@@ -1583,39 +1621,91 @@ export const OpenBookingView: React.FC<OpenBookingViewProps> = ({
                   </div>
 
                   {/* Unterer Teil: Einheiten-Umschalter (z. B. Kiste vs Flasche) + Touch +/- Buttons */}
-                  <div className="flex flex-wrap items-center justify-between gap-2 pt-2 border-t border-slate-800/80">
-                    {/* Einheiten-Wahl falls Gebinde vorhanden */}
-                    {item.subUnit && item.subUnitsPerUnit ? (
-                      <div className="flex items-center bg-slate-950 p-0.5 rounded-lg border border-slate-800 text-xs">
-                        <button
-                          type="button"
-                          onClick={() => handleUnitSwitch(item, item.unit)}
-                          className={`px-2.5 py-1 rounded-md font-medium transition cursor-pointer ${
-                            !isSubUnitActive
-                              ? 'bg-sky-500 text-slate-950 font-semibold'
-                              : 'text-slate-400 hover:text-white'
-                          }`}
-                        >
-                          {item.unit} ({item.subUnitsPerUnit})
-                        </button>
-                        <button
-                          type="button"
-                          onClick={() => handleUnitSwitch(item, item.subUnit!)}
-                          className={`px-2.5 py-1 rounded-md font-medium transition cursor-pointer ${
-                            isSubUnitActive
-                              ? 'bg-sky-500 text-slate-950 font-semibold'
-                              : 'text-slate-400 hover:text-white'
-                          }`}
-                        >
-                          Einzel-{item.subUnit}
-                        </button>
+                  <div className="flex flex-col gap-2 pt-2 border-t border-slate-800/80">
+                    {/* Interaktive Füllstands-Ampel für Gewürze & Schüttgut */}
+                    {item.unitProfile === 'spice_bulk' && (
+                      <div className="w-full bg-slate-950/80 p-2.5 rounded-xl border border-slate-800 space-y-1.5">
+                        <div className="flex items-center justify-between text-[11px]">
+                          <span className="text-slate-300 font-medium flex items-center gap-1.5">
+                            <span className="w-2 h-2 rounded-full bg-rose-400" />
+                            <span>Offene Dose (Anbruch-Füllstand):</span>
+                          </span>
+                          <span
+                            className={`px-2 py-0.5 rounded-md font-bold text-[10px] ${
+                              item.openPackLevel
+                                ? SPICE_FILL_CONFIG[item.openPackLevel].badgeClass
+                                : 'bg-slate-800 text-slate-400'
+                            }`}
+                          >
+                            {item.openPackLevel
+                              ? SPICE_FILL_CONFIG[item.openPackLevel].label
+                              : 'Noch nicht erfasst'}
+                          </span>
+                        </div>
+                        <div className="grid grid-cols-4 gap-1.5">
+                          {(['full', 'half', 'low', 'empty'] as SpiceFillLevel[]).map((lvl) => {
+                            const cfg = SPICE_FILL_CONFIG[lvl];
+                            const isActive = item.openPackLevel === lvl;
+                            return (
+                              <button
+                                key={lvl}
+                                type="button"
+                                onClick={(e) => {
+                                  e.stopPropagation();
+                                  onUpdateItemSpiceLevel?.(item.id, lvl);
+                                }}
+                                className={`py-1.5 px-1 rounded-lg text-[11px] font-bold transition flex items-center justify-center gap-1 cursor-pointer border ${
+                                  isActive
+                                    ? `${cfg.badgeClass} ring-1 ring-white/30 shadow-md`
+                                    : 'bg-slate-900 border-slate-800 text-slate-400 hover:text-white hover:bg-slate-800'
+                                }`}
+                              >
+                                <span className={`w-1.5 h-1.5 rounded-full ${cfg.dotClass}`} />
+                                <span>{cfg.short.split(' ')[0]}</span>
+                              </button>
+                            );
+                          })}
+                        </div>
                       </div>
-                    ) : (
-                      <span className="text-xs text-slate-400">
-                        Einheit: <strong className="text-slate-200">{item.unit}</strong>
-                        {item.allowFractions ? ' (auch ½ möglich)' : ''}
-                      </span>
                     )}
+
+                    <div className="flex flex-wrap items-center justify-between gap-2">
+                      {/* Einheiten-Wahl falls Gebinde vorhanden */}
+                      {item.unitProfile === 'spice_bulk' ? (
+                        <span className="text-xs text-slate-400">
+                          Vorrat: <strong className="text-slate-200">Ganze {pluralizeUnit(item.unit, 2)}</strong>
+                        </span>
+                      ) : item.subUnit && item.subUnitsPerUnit ? (
+                        <div className="flex items-center bg-slate-950 p-0.5 rounded-lg border border-slate-800 text-xs">
+                          <button
+                            type="button"
+                            onClick={() => handleUnitSwitch(item, item.unit)}
+                            className={`px-2.5 py-1 rounded-md font-medium transition cursor-pointer ${
+                              !isSubUnitActive
+                                ? 'bg-sky-500 text-slate-950 font-semibold'
+                                : 'text-slate-400 hover:text-white'
+                            }`}
+                          >
+                            {item.unit} ({item.subUnitsPerUnit})
+                          </button>
+                          <button
+                            type="button"
+                            onClick={() => handleUnitSwitch(item, item.subUnit!)}
+                            className={`px-2.5 py-1 rounded-md font-medium transition cursor-pointer ${
+                              isSubUnitActive
+                                ? 'bg-sky-500 text-slate-950 font-semibold'
+                                : 'text-slate-400 hover:text-white'
+                            }`}
+                          >
+                            Einzel-{item.subUnit}
+                          </button>
+                        </div>
+                      ) : (
+                        <span className="text-xs text-slate-400">
+                          Einheit: <strong className="text-slate-200">{item.unit}</strong>
+                          {item.allowFractions ? ' (auch ½ möglich)' : ''}
+                        </span>
+                      )}
 
                     {/* Große +/- Bedienelemente */}
                     <div className="flex items-center gap-1.5 ml-auto">
@@ -1678,6 +1768,7 @@ export const OpenBookingView: React.FC<OpenBookingViewProps> = ({
                         </button>
                       )}
                     </div>
+                  </div>
                   </div>
 
                   {/* Aufklappbarer Kisten-Inhalt (Unterartikel auf demselben Stellplatz) */}
@@ -2035,6 +2126,20 @@ export const OpenBookingView: React.FC<OpenBookingViewProps> = ({
         onAssignItemToSpot={(itemId, spot) => {
           if (onUpdateItemLocation) {
             onUpdateItemLocation(itemId, spot ? spot.fullDisplayLabel : undefined);
+          }
+        }}
+        onAssignMultipleItemsToSpot={(itemIds, spot) => {
+          if (onBulkUpdateItemLocations) {
+            onBulkUpdateItemLocations(itemIds, spot ? spot.fullDisplayLabel : undefined);
+            if (spot) {
+              setSuccessBanner(
+                `${itemIds.length} Artikel wurden dem Stellplatz „${spot.fullDisplayLabel}“ zugewiesen.`
+              );
+            }
+          } else if (onUpdateItemLocation) {
+            for (const id of itemIds) {
+              onUpdateItemLocation(id, spot ? spot.fullDisplayLabel : undefined);
+            }
           }
         }}
         onFilterBySpot={(spot) => {

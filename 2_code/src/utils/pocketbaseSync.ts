@@ -8,7 +8,11 @@ import {
   MemberAccount,
   TwoFactorConfig,
 } from '../types';
-import { normalizeUsernameForComparison } from '../data/defaultData';
+import {
+  buildAdminAccount,
+  normalizeUsernameForComparison,
+  resolveMemberPermissions,
+} from '../data/defaultData';
 
 export const CONFIG_ROW_ID = '__keller_config__';
 export const POCKETBASE_DEFAULT_URL = 'https://api.keller.schuelerunion-vorarlberg.at';
@@ -162,6 +166,37 @@ export async function authenticateMemberWithPocketBase(
   const withDomain = rawUser.includes('@') ? rawUser : `${rawUser}@schuelerunion.at`;
   const normalizedInput = normalizeUsernameForComparison(withDomain);
 
+  // 0. Prüfe dedizierten Admin-Account ("admin@schuelerunion.at" / "admin")
+  const adminAccount = buildAdminAccount(settings);
+  const normalizedAdminUser = normalizeUsernameForComparison(adminAccount.username);
+  if (
+    normalizedInput === normalizedAdminUser ||
+    normalizeUsernameForComparison(rawUser) === 'admin' ||
+    normalizedInput === 'admin@schuelerunion.at'
+  ) {
+    if (rawPass === (settings.adminPassword || 'admin')) {
+      return { account: adminAccount };
+    }
+    // Falls online, prüfe, ob das Admin-Passwort in PocketBase kürzlich geändert wurde
+    const clientForAdmin = getPocketBaseClient(settings);
+    if (clientForAdmin && navigator.onLine) {
+      try {
+        const remote = await pullFromPocketBase(settings);
+        if (remote?.config?.adminPassword && rawPass === remote.config.adminPassword) {
+          return {
+            account: buildAdminAccount({
+              ...settings,
+              adminPassword: remote.config.adminPassword,
+            }),
+          };
+        }
+      } catch {
+        // Ignorieren
+      }
+    }
+    return { error: 'Falsches Admin-Passwort.' };
+  }
+
   const client = getPocketBaseClient(settings);
 
   // 1. Online-Authentifizierung gegen die PocketBase `users`-Collection versuchen
@@ -189,6 +224,8 @@ export async function authenticateMemberWithPocketBase(
             name: resolvedName,
             username: resolvedUsername,
             password: rawPass,
+            isAdmin: Boolean(matchedLocal?.isAdmin),
+            permissions: resolveMemberPermissions(matchedLocal),
           },
         };
       }

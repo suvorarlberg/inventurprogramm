@@ -9,6 +9,12 @@ import {
   generateBackupCodes,
   formatBackupCodesForExport,
   verifyTwoFactorInput,
+  normalizeBackupCode,
+  verifyAndConsumeBackupCode,
+  generateTotpCode,
+  verifyTotpCode,
+  formatSecretForDisplay,
+  getTotpUri,
 } from '../utils/totp';
 import { TwoFactorConfig } from '../types';
 
@@ -200,5 +206,47 @@ describe('2FA & TOTP Authenticator Utilities', () => {
     const failRes = await verifyTwoFactorInput(currentConfig, currentBackupCodes[0].code);
     expect(failRes.valid).toBe(false);
     expect(failRes.errorMessage).toContain('bereits');
+  });
+
+  describe('SiP-kompatible TOTP- und Backup-Code-Funktionen', () => {
+    it('normalisiert Backup-Codes korrekt (Großschreibung, Bindestriche entfernen)', () => {
+      expect(normalizeBackupCode('abcd-efgh')).toBe('ABCDEFGH');
+      expect(normalizeBackupCode('ABCD EFGH')).toBe('ABCDEFGH');
+      expect(normalizeBackupCode('a-b-c-d-e-f-g-h')).toBe('ABCDEFGH');
+      expect(normalizeBackupCode('   xyz123   ')).toBe('XYZ123');
+    });
+
+    it('formatiert TOTP-Secret in lesbare 4er-Blöcke', () => {
+      const secret = 'JBSWY3DPEHPK3PXP';
+      expect(formatSecretForDisplay(secret)).toBe('JBSW Y3DP EHPK 3PXP');
+    });
+
+    it('erzeugt otpauth URI mit getTotpUri', () => {
+      const uri = getTotpUri('JBSWY3DPEHPK3PXP', 'admin', 'Inventur');
+      expect(uri).toContain('otpauth://totp/Inventur:admin');
+      expect(uri).toContain('secret=JBSWY3DPEHPK3PXP');
+    });
+
+    it('erzeugt und verifiziert Code mit generateTotpCode / verifyTotpCode', async () => {
+      const secret = generateTotpSecret();
+      const code = await generateTotpCode(secret);
+      expect(code).toHaveLength(6);
+      const valid = await verifyTotpCode(secret, code);
+      expect(valid).toBe(true);
+      const invalid = await verifyTotpCode(secret, '000000');
+      expect(invalid).toBe(false);
+    });
+
+    it('prüft und verbraucht Backup-Codes mit verifyAndConsumeBackupCode', () => {
+      const rawCodes = ['ABCD-1234', 'EFGH-5678', 'JKLM-9012'];
+      const result = verifyAndConsumeBackupCode(rawCodes, 'abcd1234');
+      expect(result.valid).toBe(true);
+      expect(result.remainingCodes).toEqual(['EFGH-5678', 'JKLM-9012']);
+
+      // Erneut prüfen mit demselben Code schlägt fehl
+      const secondAttempt = verifyAndConsumeBackupCode(result.remainingCodes, 'ABCD-1234');
+      expect(secondAttempt.valid).toBe(false);
+      expect(secondAttempt.remainingCodes).toEqual(['EFGH-5678', 'JKLM-9012']);
+    });
   });
 });

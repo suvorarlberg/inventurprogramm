@@ -1,4 +1,4 @@
-import React, { useState, useEffect } from 'react';
+import React, { useState, useEffect, useMemo } from 'react';
 import {
   Lock,
   Unlock,
@@ -23,6 +23,7 @@ import {
   Tag,
   Mail,
   ShieldCheck,
+  Search,
   KeyRound,
   Users,
   UserPlus,
@@ -47,7 +48,9 @@ import {
   InventoryItem,
   InventoryTransaction,
   MemberAccount,
+  SpiceFillLevel,
   TwoFactorConfig,
+  UnitProfile,
 } from '../types';
 import {
   CATEGORIES,
@@ -64,6 +67,7 @@ import {
   getExpiryStatus,
   normalizeExpiryDate,
   roundStock,
+  SPICE_FILL_CONFIG,
 } from '../utils/units';
 import {
   downloadTextFile,
@@ -79,6 +83,7 @@ import {
   POCKETBASE_COLLECTIONS_INFO,
 } from '../utils/pocketbaseSync';
 import {
+  downloadBackupCodesTxt,
   formatBackupCodesForExport,
   generateBackupCodes,
   generateTotpSecret,
@@ -94,12 +99,15 @@ import { QrScannerModal } from './QrScannerModal';
 import { LocationAssignmentModal } from './LocationAssignmentModal';
 import { LabelSizeOption, ShelfQrPrintManager } from './ShelfQrPrintManager';
 import { SubItemsModal } from './SubItemsModal';
+import { CloneItemModal } from './CloneItemModal';
 
 interface AdminViewProps {
   items: InventoryItem[];
   transactions: InventoryTransaction[];
   settings: AppSettings;
   isUnlocked: boolean;
+  isCurrentUserAdmin?: boolean;
+  canDoInitialInventory?: boolean;
   onUnlock: () => void;
   onLock: () => void;
   initial2FAVerified?: boolean;
@@ -110,9 +118,12 @@ interface AdminViewProps {
     updatedExpiries?: Record<string, string | undefined>
   ) => void;
   onUpsertItem: (item: InventoryItem) => void;
+  onBulkUpsertItems?: (items: InventoryItem[]) => void;
   onUpdateItemLocation?: (itemId: string, location?: string) => void;
+  onBulkUpdateItemLocations?: (itemIds: string[], location?: string) => void;
   onAddSubItems?: (parentItem: InventoryItem, newSubItems: InventoryItem[]) => void;
   onAssignItemToParent?: (itemId: string, parentItem: InventoryItem | null) => void;
+  onBulkAssignItemsToParent?: (itemIds: string[], parentItem: InventoryItem | null) => void;
   onDeleteItem: (itemId: string) => void;
   onBulkImportItems: (
     newItems: InventoryItem[],
@@ -129,15 +140,20 @@ export const AdminView: React.FC<AdminViewProps> = ({
   transactions,
   settings,
   isUnlocked,
+  isCurrentUserAdmin,
+  canDoInitialInventory,
   onUnlock,
   onLock,
   initial2FAVerified,
   onClearInitial2FAVerified,
   onSaveInitialInventory,
   onUpsertItem,
+  onBulkUpsertItems,
   onUpdateItemLocation,
+  onBulkUpdateItemLocations,
   onAddSubItems,
   onAssignItemToParent,
+  onBulkAssignItemsToParent,
   onDeleteItem,
   onBulkImportItems,
   onUpdateSettings,
@@ -158,9 +174,11 @@ export const AdminView: React.FC<AdminViewProps> = ({
   const [passwordInput, setPasswordInput] = useState('');
   const [passwordError, setPasswordError] = useState(false);
   const [adminSubTab, setAdminSubTab] = useState<
-    'inventory' | 'items' | 'locations' | 'csv' | 'settings'
+    'inventory' | 'items' | 'locations' | 'users' | 'permissions' | 'settings' | 'csv'
   >('inventory');
   const [statusMessage, setStatusMessage] = useState<string | null>(null);
+  const [adminAccessQuery, setAdminAccessQuery] = useState('');
+  const [memberSearchQuery, setMemberSearchQuery] = useState('');
 
   // State für Stellplatz-QR-Code-Druck & Scanner im Admin-Bereich
   const [printMode, setPrintMode] = useState<'door_qr' | 'shelf_labels'>('door_qr');
@@ -172,6 +190,7 @@ export const AdminView: React.FC<AdminViewProps> = ({
   const [adminSelectedSpot, setAdminSelectedSpot] = useState<StorageLocationSpot | null>(null);
   const [adminSpotScannerOpen, setAdminSpotScannerOpen] = useState(false);
   const [adminSubItemsParent, setAdminSubItemsParent] = useState<InventoryItem | null>(null);
+  const [cloningItem, setCloningItem] = useState<InventoryItem | null>(null);
   const [newMemberName, setNewMemberName] = useState('');
   const [memberPasswordDrafts, setMemberPasswordDrafts] = useState<Record<string, string>>({});
   const [copiedCredentials, setCopiedCredentials] = useState(false);
@@ -196,6 +215,8 @@ export const AdminView: React.FC<AdminViewProps> = ({
   const [itemForm, setItemForm] = useState<{
     name: string;
     category: CategoryId;
+    unitProfile: UnitProfile;
+    openPackLevel: SpiceFillLevel;
     unit: string;
     subUnit: string;
     subUnitsPerUnit: string;
@@ -212,6 +233,8 @@ export const AdminView: React.FC<AdminViewProps> = ({
     const fallback = {
       name: '',
       category: activeCategories[0]?.id || 'drinks_food',
+      unitProfile: (activeCategories[0]?.defaultUnitProfile || 'beverage') as UnitProfile,
+      openPackLevel: 'full' as SpiceFillLevel,
       unit: 'Kiste',
       subUnit: 'Flasche',
       subUnitsPerUnit: '20',
@@ -232,6 +255,8 @@ export const AdminView: React.FC<AdminViewProps> = ({
         return {
           ...fallback,
           category: parsed.category || fallback.category,
+          unitProfile: (parsed.unitProfile || fallback.unitProfile) as UnitProfile,
+          openPackLevel: (parsed.openPackLevel || 'full') as SpiceFillLevel,
           unit: parsed.unit ?? fallback.unit,
           subUnit: parsed.subUnit ?? '',
           subUnitsPerUnit: parsed.subUnitsPerUnit ?? '',
@@ -882,6 +907,16 @@ export const AdminView: React.FC<AdminViewProps> = ({
     setItemForm({
       name: item.name,
       category: item.category,
+      unitProfile:
+        item.unitProfile ||
+        (item.category === 'spices_kitchen'
+          ? 'spice_bulk'
+          : item.subUnit
+          ? 'beverage'
+          : item.isReturnable
+          ? 'piece'
+          : 'consumable'),
+      openPackLevel: item.openPackLevel || 'full',
       unit: item.unit,
       subUnit: item.subUnit || '',
       subUnitsPerUnit: item.subUnitsPerUnit ? String(item.subUnitsPerUnit) : '',
@@ -898,8 +933,27 @@ export const AdminView: React.FC<AdminViewProps> = ({
     setAdminSubTab('items');
   }
 
+  function handleConfirmClone(clonedItems: InventoryItem[]) {
+    if (clonedItems.length === 0) return;
+    if (onBulkUpsertItems) {
+      onBulkUpsertItems(clonedItems);
+    } else {
+      clonedItems.forEach((item) => onUpsertItem(item));
+    }
+    const parent = clonedItems[0];
+    const subCount = clonedItems.length - 1;
+    showBanner(
+      subCount > 0
+        ? `„${parent.name}“ inkl. ${subCount} Unterartikeln erfolgreich geklont!`
+        : `„${parent.name}“ erfolgreich als Kopie angelegt!`
+    );
+    setCloningItem(null);
+  }
+
   function resetItemForm(preservedOverrides?: {
     category?: CategoryId;
+    unitProfile?: UnitProfile;
+    openPackLevel?: SpiceFillLevel;
     unit?: string;
     subUnit?: string;
     subUnitsPerUnit?: string;
@@ -913,9 +967,15 @@ export const AdminView: React.FC<AdminViewProps> = ({
     setInlineNewCategoryMode(false);
     setInlineCategoryName('');
     setItemForm((prev) => {
+      const catId =
+        preservedOverrides?.category ?? prev.category ?? (activeCategories[0]?.id || 'drinks_food');
+      const catObj = activeCategories.find((c) => c.id === catId);
       const nextState = {
         name: '',
-        category: preservedOverrides?.category ?? prev.category ?? (activeCategories[0]?.id || 'drinks_food'),
+        category: catId,
+        unitProfile:
+          preservedOverrides?.unitProfile ?? (catObj?.defaultUnitProfile || 'beverage'),
+        openPackLevel: preservedOverrides?.openPackLevel ?? 'full',
         unit: preservedOverrides?.unit ?? prev.unit ?? 'Stück',
         subUnit: preservedOverrides?.subUnit ?? prev.subUnit ?? '',
         subUnitsPerUnit: preservedOverrides?.subUnitsPerUnit ?? prev.subUnitsPerUnit ?? '',
@@ -934,6 +994,8 @@ export const AdminView: React.FC<AdminViewProps> = ({
           'vk_last_item_form_defaults_v1',
           JSON.stringify({
             category: nextState.category,
+            unitProfile: nextState.unitProfile,
+            openPackLevel: nextState.openPackLevel,
             unit: nextState.unit,
             subUnit: nextState.subUnit,
             subUnitsPerUnit: nextState.subUnitsPerUnit,
@@ -995,6 +1057,8 @@ export const AdminView: React.FC<AdminViewProps> = ({
       name: itemForm.name.trim(),
       category: chosenCategoryId,
       categoryLabel: chosenCategoryLabel,
+      unitProfile: itemForm.unitProfile || 'consumable',
+      openPackLevel: itemForm.unitProfile === 'spice_bulk' ? itemForm.openPackLevel : undefined,
       unit: itemForm.unit.trim() || 'Stück',
       subUnit: hasSubUnit ? itemForm.subUnit.trim() : undefined,
       subUnitsPerUnit: hasSubUnit ? factor : undefined,
@@ -1300,6 +1364,57 @@ export const AdminView: React.FC<AdminViewProps> = ({
     );
   }
 
+  const adminDashboardUsernames = useMemo(
+    () => [...new Set(settings.adminDashboardUsernames ?? [])],
+    [settings.adminDashboardUsernames]
+  );
+
+  const adminDashboardSuggestions = useMemo(() => {
+    const query = adminAccessQuery.trim().toLowerCase();
+    if (!query) return [];
+
+    return activeMemberAccounts
+      .filter((account) => !adminDashboardUsernames.includes(account.username))
+      .filter(
+        (account) =>
+          account.name.toLowerCase().includes(query) ||
+          account.username.toLowerCase().includes(query)
+      )
+      .slice(0, 6);
+  }, [activeMemberAccounts, adminDashboardUsernames, adminAccessQuery]);
+
+  function handleToggleAdminDashboardAccess(username: string, enabled: boolean) {
+    let nextUsernames = adminDashboardUsernames;
+
+    if (enabled) {
+      if (nextUsernames.includes(username)) return;
+      nextUsernames = [...nextUsernames, username];
+    } else {
+      const account = activeMemberAccounts.find((item) => item.username === username);
+      const displayName = account?.name ?? username;
+
+      if (!window.confirm(`Die Freischaltung für „${displayName}“ wirklich entfernen?`)) {
+        return;
+      }
+
+      nextUsernames = nextUsernames.filter((name: string) => name !== username);
+    }
+
+    onUpdateSettings({
+      ...settings,
+      adminDashboardUsernames: nextUsernames,
+    });
+    showBanner(enabled ? `Admin-Button für „${username}“ im Header freigeschaltet!` : 'Freischaltung entfernt.');
+  }
+
+  const filteredMemberAccounts = useMemo(() => {
+    const q = memberSearchQuery.trim().toLowerCase();
+    if (!q) return activeMemberAccounts;
+    return activeMemberAccounts.filter(
+      (acc: MemberAccount) => acc.name.toLowerCase().includes(q) || acc.username.toLowerCase().includes(q)
+    );
+  }, [activeMemberAccounts, memberSearchQuery]);
+
   const shareUrl = buildShareableAppUrl(settingsForm);
 
   return (
@@ -1401,48 +1516,72 @@ export const AdminView: React.FC<AdminViewProps> = ({
             onClick={() => setAdminSubTab('items')}
             className={`flex items-center gap-1.5 px-3.5 py-2 rounded-xl text-xs sm:text-sm font-semibold transition cursor-pointer ${
               adminSubTab === 'items'
-                ? 'bg-sky-500 text-slate-950'
+                ? 'bg-sky-500 text-slate-950 font-bold'
                 : 'text-slate-300 hover:bg-slate-800'
             }`}
           >
             <Package className="w-4 h-4" />
-            <span>2. Artikel & Kategorien</span>
+            <span>2. Artikel & Profile</span>
           </button>
 
           <button
             onClick={() => setAdminSubTab('locations')}
             className={`flex items-center gap-1.5 px-3.5 py-2 rounded-xl text-xs sm:text-sm font-semibold transition cursor-pointer ${
               adminSubTab === 'locations'
-                ? 'bg-sky-500 text-slate-950'
+                ? 'bg-sky-500 text-slate-950 font-bold'
                 : 'text-slate-300 hover:bg-slate-800'
             }`}
           >
             <QrCode className="w-4 h-4" />
-            <span>3. Stellplätze & QR-Codes</span>
+            <span>3. Stellplätze & QR</span>
           </button>
 
           <button
-            onClick={() => setAdminSubTab('csv')}
+            onClick={() => setAdminSubTab('users')}
             className={`flex items-center gap-1.5 px-3.5 py-2 rounded-xl text-xs sm:text-sm font-semibold transition cursor-pointer ${
-              adminSubTab === 'csv'
-                ? 'bg-sky-500 text-slate-950'
+              adminSubTab === 'users'
+                ? 'bg-sky-500 text-slate-950 font-bold'
                 : 'text-slate-300 hover:bg-slate-800'
             }`}
           >
-            <FileSpreadsheet className="w-4 h-4" />
-            <span>4. CSV / Excel Import & Export</span>
+            <Users className="w-4 h-4" />
+            <span>4. Konten & Zugänge</span>
+          </button>
+
+          <button
+            onClick={() => setAdminSubTab('permissions')}
+            className={`flex items-center gap-1.5 px-3.5 py-2 rounded-xl text-xs sm:text-sm font-semibold transition cursor-pointer ${
+              adminSubTab === 'permissions'
+                ? 'bg-sky-500 text-slate-950 font-bold'
+                : 'text-slate-300 hover:bg-slate-800'
+            }`}
+          >
+            <ShieldCheck className="w-4 h-4" />
+            <span>5. Rechte & Admin-Button</span>
           </button>
 
           <button
             onClick={() => setAdminSubTab('settings')}
             className={`flex items-center gap-1.5 px-3.5 py-2 rounded-xl text-xs sm:text-sm font-semibold transition cursor-pointer ${
               adminSubTab === 'settings'
-                ? 'bg-sky-500 text-slate-950'
+                ? 'bg-sky-500 text-slate-950 font-bold'
                 : 'text-slate-300 hover:bg-slate-800'
             }`}
           >
             <Settings className="w-4 h-4" />
-            <span>5. Personen, Datenbank & Passwort</span>
+            <span>6. Sicherheit & 2FA</span>
+          </button>
+
+          <button
+            onClick={() => setAdminSubTab('csv')}
+            className={`flex items-center gap-1.5 px-3.5 py-2 rounded-xl text-xs sm:text-sm font-semibold transition cursor-pointer ${
+              adminSubTab === 'csv'
+                ? 'bg-sky-500 text-slate-950 font-bold'
+                : 'text-slate-300 hover:bg-slate-800'
+            }`}
+          >
+            <FileSpreadsheet className="w-4 h-4" />
+            <span>7. Export & Backup</span>
           </button>
         </div>
 
@@ -1791,6 +1930,145 @@ export const AdminView: React.FC<AdminViewProps> = ({
                 />
               </div>
 
+              {/* Einheitsprofil (Lösung 3: Gewürze vs. Getränke vs. Stückgut) */}
+              <div className="space-y-1.5">
+                <label className="block text-xs font-semibold text-slate-300">
+                  Einheitsprofil & Zählweise
+                </label>
+                <div className="grid grid-cols-2 sm:grid-cols-4 gap-1.5">
+                  {[
+                    {
+                      profile: 'beverage' as UnitProfile,
+                      label: 'Getränke',
+                      desc: 'Kiste & Flaschen',
+                      icon: '🍾',
+                    },
+                    {
+                      profile: 'spice_bulk' as UnitProfile,
+                      label: 'Küche & Gewürze',
+                      desc: 'Vorrat + Anbruch-Ampel',
+                      icon: '🧂',
+                    },
+                    {
+                      profile: 'piece' as UnitProfile,
+                      label: 'Stückgut / Technik',
+                      desc: 'Ganze Einheiten',
+                      icon: '📦',
+                    },
+                    {
+                      profile: 'consumable' as UnitProfile,
+                      label: 'Verbrauch',
+                      desc: 'Rolle / Packung',
+                      icon: '📄',
+                    },
+                  ].map(({ profile, label, desc, icon }) => {
+                    const active = itemForm.unitProfile === profile;
+                    return (
+                      <button
+                        key={profile}
+                        type="button"
+                        onClick={() => {
+                          if (profile === 'spice_bulk') {
+                            setItemForm((prev) => ({
+                              ...prev,
+                              unitProfile: 'spice_bulk',
+                              category: activeCategories.some((c) => c.id === 'spices_kitchen')
+                                ? 'spices_kitchen'
+                                : prev.category,
+                              unit: prev.unit === 'Kiste' ? 'Dose' : prev.unit || 'Dose',
+                              subUnit: '',
+                              subUnitsPerUnit: '',
+                              allowFractions: false,
+                              openPackLevel: prev.openPackLevel || 'full',
+                            }));
+                          } else if (profile === 'beverage') {
+                            setItemForm((prev) => ({
+                              ...prev,
+                              unitProfile: 'beverage',
+                              category: activeCategories.some((c) => c.id === 'drinks_food')
+                                ? 'drinks_food'
+                                : prev.category,
+                              unit: prev.unit === 'Dose' ? 'Kiste' : prev.unit || 'Kiste',
+                              subUnit: prev.subUnit || 'Flasche',
+                              subUnitsPerUnit: prev.subUnitsPerUnit || '20',
+                              allowFractions: true,
+                            }));
+                          } else if (profile === 'piece') {
+                            setItemForm((prev) => ({
+                              ...prev,
+                              unitProfile: 'piece',
+                              category: activeCategories.some((c) => c.id === 'equipment')
+                                ? 'equipment'
+                                : prev.category,
+                              unit: 'Stück',
+                              subUnit: '',
+                              subUnitsPerUnit: '',
+                              allowFractions: false,
+                              isReturnable: true,
+                            }));
+                          } else {
+                            setItemForm((prev) => ({
+                              ...prev,
+                              unitProfile: 'consumable',
+                              category: activeCategories.some((c) => c.id === 'consumables')
+                                ? 'consumables'
+                                : prev.category,
+                              allowFractions: true,
+                            }));
+                          }
+                        }}
+                        className={`p-2 rounded-xl text-left border transition cursor-pointer flex flex-col gap-0.5 ${
+                          active
+                            ? 'bg-sky-500/20 border-sky-500 text-sky-200 shadow-md'
+                            : 'bg-slate-950 border-slate-800 text-slate-400 hover:text-white hover:bg-slate-800'
+                        }`}
+                      >
+                        <span className="text-base">{icon}</span>
+                        <span className="text-xs font-bold text-white">{label}</span>
+                        <span className="text-[10px] text-slate-400">{desc}</span>
+                      </button>
+                    );
+                  })}
+                </div>
+              </div>
+
+              {/* Füllstands-Ampel bei Gewürzen & Schüttgut */}
+              {itemForm.unitProfile === 'spice_bulk' && (
+                <div className="p-3 rounded-xl bg-slate-950 border border-rose-500/30 space-y-2">
+                  <div className="flex items-center justify-between">
+                    <span className="text-xs font-bold text-rose-300 flex items-center gap-1.5">
+                      <span>🧂</span>
+                      <span>Anbruch-Füllstand der offenen Dose</span>
+                    </span>
+                    <span className="text-[10px] text-slate-400">Kein Gramm-Schätzen</span>
+                  </div>
+                  <p className="text-[11px] text-slate-400 leading-snug">
+                    Der Vorratsbestand zählt geschlossene Originalpackungen. Wie voll ist die angebrochene Dose in der Küche aktuell?
+                  </p>
+                  <div className="grid grid-cols-4 gap-1.5">
+                    {(['full', 'half', 'low', 'empty'] as SpiceFillLevel[]).map((lvl) => {
+                      const cfg = SPICE_FILL_CONFIG[lvl];
+                      const isSel = itemForm.openPackLevel === lvl;
+                      return (
+                        <button
+                          key={lvl}
+                          type="button"
+                          onClick={() => setItemForm({ ...itemForm, openPackLevel: lvl })}
+                          className={`py-1.5 px-1 rounded-lg text-[10px] font-bold border transition flex items-center justify-center gap-1 cursor-pointer ${
+                            isSel
+                              ? `${cfg.badgeClass} ring-1 ring-white/30 shadow-md`
+                              : 'bg-slate-900 border-slate-800 text-slate-400 hover:text-white'
+                          }`}
+                        >
+                          <span className={`w-1.5 h-1.5 rounded-full ${cfg.dotClass}`} />
+                          <span>{cfg.short.split(' ')[0]}</span>
+                        </button>
+                      );
+                    })}
+                  </div>
+                </div>
+              )}
+
               <div className="grid grid-cols-1 sm:grid-cols-2 gap-2.5">
                 <div>
                   <div className="flex items-center justify-between mb-1">
@@ -2055,13 +2333,26 @@ export const AdminView: React.FC<AdminViewProps> = ({
                 </label>
               </div>
 
-              <button
-                type="submit"
-                className="w-full flex items-center justify-center gap-2 py-2.5 px-4 rounded-xl bg-sky-500 hover:bg-sky-400 text-slate-950 font-bold text-sm shadow-lg shadow-sky-500/20 cursor-pointer"
-              >
-                <Check className="w-4 h-4 stroke-[2.5]" />
-                <span>{editingItem ? 'Änderungen speichern' : 'Artikel im Keller anlegen'}</span>
-              </button>
+              <div className="flex items-center gap-2">
+                <button
+                  type="submit"
+                  className="flex-1 flex items-center justify-center gap-2 py-2.5 px-4 rounded-xl bg-sky-500 hover:bg-sky-400 text-slate-950 font-bold text-sm shadow-lg shadow-sky-500/20 cursor-pointer"
+                >
+                  <Check className="w-4 h-4 stroke-[2.5]" />
+                  <span>{editingItem ? 'Änderungen speichern' : 'Artikel im Keller anlegen'}</span>
+                </button>
+                {editingItem && (
+                  <button
+                    type="button"
+                    onClick={() => setCloningItem(editingItem)}
+                    className="flex items-center justify-center gap-1.5 py-2.5 px-3.5 rounded-xl bg-slate-800 hover:bg-slate-700 text-sky-300 font-semibold text-xs cursor-pointer border border-slate-700 shrink-0"
+                    title="Diesen Artikel als Vorlage klonen"
+                  >
+                    <Copy className="w-4 h-4" />
+                    <span>Klonen</span>
+                  </button>
+                )}
+              </div>
             </form>
 
             {/* Artikelliste rechts */}
@@ -2248,6 +2539,14 @@ export const AdminView: React.FC<AdminViewProps> = ({
                           </button>
                           <button
                             type="button"
+                            onClick={() => setCloningItem(item)}
+                            className="p-2 rounded-lg bg-slate-800 hover:bg-slate-700 text-sky-400 hover:text-sky-300 cursor-pointer"
+                            title="Artikel klonen (Bestätigungsfenster öffnen, inkl. Unterartikel)"
+                          >
+                            <Copy className="w-4 h-4" />
+                          </button>
+                          <button
+                            type="button"
                             onClick={() => startEditItem(item)}
                             className="p-2 rounded-lg bg-slate-800 hover:bg-slate-700 text-sky-300 cursor-pointer"
                             title="Bearbeiten"
@@ -2378,8 +2677,47 @@ export const AdminView: React.FC<AdminViewProps> = ({
       )}
 
       {/* SUB-TAB 4: PERSONEN, DATENBANK, QR-CODE & EINSTELLUNGEN */}
-      {adminSubTab === 'settings' && (
+      {/* SUB-TAB 4: BENUTZER & KONTEN */}
+      {adminSubTab === 'users' && (
         <div className="space-y-5 no-print">
+          {/* Zentraler Admin-Account Übersicht */}
+          <div className="bg-slate-900 border-2 border-emerald-500/40 rounded-2xl p-4 sm:p-5 space-y-3">
+            <div className="flex flex-col sm:flex-row sm:items-center justify-between gap-3">
+              <div className="flex items-start gap-3">
+                <div className="w-10 h-10 rounded-2xl bg-emerald-500/15 border border-emerald-500/30 flex items-center justify-center shrink-0">
+                  <ShieldCheck className="w-5 h-5 text-emerald-400" />
+                </div>
+                <div>
+                  <h3 className="font-bold text-white text-base flex flex-wrap items-center gap-2">
+                    <span>Zentraler Admin-Account</span>
+                    <span className="text-[11px] px-2.5 py-0.5 rounded-full bg-emerald-500/20 text-emerald-300 border border-emerald-500/40 font-bold">
+                      Vollzugriff
+                    </span>
+                  </h3>
+                  <p className="text-xs text-slate-300 mt-0.5">
+                    Mit diesem zentralen Admin-Account kannst du dich jederzeit direkt anmelden oder den Admin-Bereich entsperren.
+                  </p>
+                </div>
+              </div>
+
+              <div className="flex flex-wrap items-center gap-2 bg-slate-950 px-3.5 py-2.5 rounded-xl border border-slate-800 text-xs">
+                <div>
+                  <span className="text-slate-400 block text-[10px]">Admin-Benutzername:</span>
+                  <code className="font-mono font-bold text-sky-300">
+                    {settings.adminUsername || 'admin@schuelerunion.at'}
+                  </code>
+                </div>
+                <span className="text-slate-700 mx-1">|</span>
+                <div>
+                  <span className="text-slate-400 block text-[10px]">Passwort:</span>
+                  <span className="font-mono font-bold text-emerald-300">
+                    {settings.adminPassword}
+                  </span>
+                </div>
+              </div>
+            </div>
+          </div>
+
           {/* Berechtigte Personen, Benutzernamen & Passwörter verwalten */}
           <div className="bg-slate-900 border border-slate-800 rounded-2xl p-5 space-y-4">
             <div className="flex flex-col sm:flex-row sm:items-center justify-between gap-3">
@@ -2387,12 +2725,12 @@ export const AdminView: React.FC<AdminViewProps> = ({
                 <h3 className="font-bold text-white text-base flex items-center gap-2">
                   <Users className="w-5 h-5 text-sky-400" />
                   <span>
-                    Berechtigte Personen & Login-Zugangsdaten ({activeMemberAccounts.length})
+                    Benutzerkonten & Login-Zugangsdaten ({activeMemberAccounts.length})
                   </span>
                 </h3>
                 <p className="text-xs text-slate-400 mt-1">
                   Jede Person erhält automatisch den Benutzernamen{' '}
-                  <code className="text-sky-300">vorname.nachname@schuelerunion.at</code> und ein zufälliges Passwort. Du kannst die Passwörter hier jederzeit einsehen und ändern.
+                  <code className="text-sky-300">vorname.nachname@schuelerunion.at</code> und ein Passwort.
                 </p>
               </div>
 
@@ -2423,29 +2761,43 @@ export const AdminView: React.FC<AdminViewProps> = ({
               </button>
             </div>
 
-            <form onSubmit={handleAddAllowedMember} className="flex flex-col sm:flex-row gap-2">
-              <div className="relative flex-1">
-                <UserPlus className="w-4 h-4 text-slate-400 absolute left-3 top-1/2 -translate-y-1/2" />
+            {/* Suche & Neue Person anlegen */}
+            <div className="grid grid-cols-1 md:grid-cols-2 gap-2.5">
+              <div className="relative">
+                <Search className="w-4 h-4 text-slate-400 absolute left-3 top-1/2 -translate-y-1/2" />
                 <input
                   type="text"
-                  value={newMemberName}
-                  onChange={(e) => setNewMemberName(e.target.value)}
-                  placeholder="Neue Person hinzufügen (z. B. Max Mustermann -> max.mustermann@schuelerunion.at)..."
+                  value={memberSearchQuery}
+                  onChange={(e) => setMemberSearchQuery(e.target.value)}
+                  placeholder="Person oder E-Mail durchsuchen..."
                   className="w-full pl-9 pr-3.5 py-2 rounded-xl bg-slate-950 border border-slate-700 text-sm text-white focus:border-sky-500 focus:outline-none"
                 />
               </div>
-              <button
-                type="submit"
-                disabled={!newMemberName.trim()}
-                className="flex items-center justify-center gap-1.5 px-4 py-2 rounded-xl bg-sky-500 hover:bg-sky-400 disabled:opacity-40 text-slate-950 font-bold text-xs sm:text-sm cursor-pointer shrink-0"
-              >
-                <Plus className="w-4 h-4 stroke-[2.5]" />
-                <span>Person anlegen</span>
-              </button>
-            </form>
+
+              <form onSubmit={handleAddAllowedMember} className="flex gap-2">
+                <div className="relative flex-1">
+                  <UserPlus className="w-4 h-4 text-slate-400 absolute left-3 top-1/2 -translate-y-1/2" />
+                  <input
+                    type="text"
+                    value={newMemberName}
+                    onChange={(e) => setNewMemberName(e.target.value)}
+                    placeholder="Neue Person anlegen (z. B. Max Mustermann)..."
+                    className="w-full pl-9 pr-3.5 py-2 rounded-xl bg-slate-950 border border-slate-700 text-sm text-white focus:border-sky-500 focus:outline-none"
+                  />
+                </div>
+                <button
+                  type="submit"
+                  disabled={!newMemberName.trim()}
+                  className="flex items-center justify-center gap-1.5 px-4 py-2 rounded-xl bg-sky-500 hover:bg-sky-400 disabled:opacity-40 text-slate-950 font-bold text-xs sm:text-sm cursor-pointer shrink-0"
+                >
+                  <Plus className="w-4 h-4 stroke-[2.5]" />
+                  <span>Anlegen</span>
+                </button>
+              </form>
+            </div>
 
             <div className="space-y-2 max-h-[440px] overflow-y-auto pr-1 pt-1">
-              {activeMemberAccounts.map((acc) => {
+              {filteredMemberAccounts.map((acc: MemberAccount) => {
                 const draftPass =
                   memberPasswordDrafts[acc.name] !== undefined
                     ? memberPasswordDrafts[acc.name]
@@ -2460,7 +2812,19 @@ export const AdminView: React.FC<AdminViewProps> = ({
                     className="flex flex-col md:flex-row md:items-center justify-between gap-2.5 p-3 rounded-xl bg-slate-950 border border-slate-800 text-xs sm:text-sm"
                   >
                     <div className="min-w-0 flex-1">
-                      <div className="font-bold text-white truncate">{acc.name}</div>
+                      <div className="font-bold text-white truncate flex items-center gap-2">
+                        <span>{acc.name}</span>
+                        {acc.isAdmin && (
+                          <span className="text-[10px] px-2 py-0.5 rounded-full bg-amber-500/20 text-amber-300 border border-amber-500/40 font-bold">
+                            👑 Admin
+                          </span>
+                        )}
+                        {adminDashboardUsernames.includes(acc.username) && (
+                          <span className="text-[10px] px-2 py-0.5 rounded-full bg-sky-500/20 text-sky-300 border border-sky-500/40 font-semibold">
+                            Admin-Button aktiv
+                          </span>
+                        )}
+                      </div>
                       <div className="text-xs text-sky-400 font-mono break-all">
                         {acc.username}
                       </div>
@@ -2541,7 +2905,111 @@ export const AdminView: React.FC<AdminViewProps> = ({
               })}
             </div>
           </div>
+        </div>
+      )}
 
+      {/* SUB-TAB 5: RECHTEVERWALTUNG & ADMIN-BUTTON FREISCHALTUNG (SiP-STIL) */}
+      {adminSubTab === 'permissions' && (
+        <div className="space-y-5 no-print">
+          {/* Admin-Dashboard & Button Freischaltung (wie in SiP!) */}
+          <div className="bg-slate-900 border-2 border-amber-500/40 rounded-2xl p-5 space-y-4">
+            <div className="flex flex-col sm:flex-row sm:items-center justify-between gap-3">
+              <div>
+                <h3 className="font-bold text-white text-base flex items-center gap-2">
+                  <ShieldCheck className="w-5 h-5 text-amber-400" />
+                  <span>Admin-Button & Dashboard-Freischaltung</span>
+                </h3>
+                <p className="text-xs text-slate-400 mt-1">
+                  Bestimme hier, wer den <strong>Admin-Button im Header</strong> überhaupt sehen und aufrufen darf. Bei allen anderen Benutzern wird der Admin-Button komplett ausgeblendet!
+                </p>
+              </div>
+
+              <span className="px-3 py-1 rounded-full bg-amber-500/15 border border-amber-500/30 text-amber-300 font-bold text-xs self-start sm:self-auto">
+                {adminDashboardUsernames.length} Konto/Konten freigeschaltet
+              </span>
+            </div>
+
+            {/* Suche nach Mitglied zum Freischalten */}
+            <div className="relative">
+              <Search className="w-4 h-4 text-slate-400 absolute left-3 top-1/2 -translate-y-1/2" />
+              <input
+                type="text"
+                value={adminAccessQuery}
+                onChange={(e) => setAdminAccessQuery(e.target.value)}
+                placeholder="Mitglied suchen, um Admin-Button freizuschalten..."
+                className="w-full pl-9 pr-3.5 py-2.5 rounded-xl bg-slate-950 border border-slate-700 text-sm text-white focus:border-amber-500 focus:outline-none"
+              />
+            </div>
+
+            {/* Vorschläge zum Hinzufügen */}
+            {adminDashboardSuggestions.length > 0 && (
+              <div className="p-3 rounded-xl bg-slate-950 border border-slate-800 space-y-1.5">
+                <span className="text-[11px] font-semibold text-slate-400 block mb-1">
+                  Klicken zum Freischalten:
+                </span>
+                <div className="flex flex-wrap gap-1.5">
+                  {adminDashboardSuggestions.map((acc: MemberAccount) => (
+                    <button
+                      key={acc.username}
+                      type="button"
+                      onClick={() => handleToggleAdminDashboardAccess(acc.username, true)}
+                      className="inline-flex items-center gap-1.5 px-2.5 py-1 rounded-lg bg-slate-900 hover:bg-slate-800 border border-slate-700 text-xs text-slate-200 cursor-pointer transition hover:border-amber-500/40"
+                    >
+                      <Plus className="w-3.5 h-3.5 text-amber-400" />
+                      <span className="font-medium">{acc.name}</span>
+                      <span className="text-[10px] text-slate-500">({acc.username})</span>
+                    </button>
+                  ))}
+                </div>
+              </div>
+            )}
+
+            {/* Aktuell freigeschaltete Konten */}
+            <div className="space-y-2 pt-2">
+              <span className="text-xs font-semibold text-slate-300 block">
+                Aktuell freigeschaltete Konten für den Admin-Button:
+              </span>
+              {adminDashboardUsernames.length === 0 ? (
+                <div className="p-3.5 rounded-xl bg-slate-950 border border-slate-800 text-xs text-slate-500">
+                  Keine zusätzlichen Konten freigeschaltet. Nur der zentrale Admin-Account sieht den Admin-Button.
+                </div>
+              ) : (
+                <div className="grid grid-cols-1 sm:grid-cols-2 gap-2">
+                  {adminDashboardUsernames.map((username: string) => {
+                    const acc = activeMemberAccounts.find((a) => a.username === username);
+                    const displayName = acc?.name || username;
+                    return (
+                      <div
+                        key={username}
+                        className="flex items-center justify-between p-3 rounded-xl bg-slate-950 border border-amber-500/30 text-xs"
+                      >
+                        <div className="min-w-0 flex-1">
+                          <span className="font-bold text-white block truncate">{displayName}</span>
+                          <span className="font-mono text-[11px] text-amber-300 truncate block">
+                            {username}
+                          </span>
+                        </div>
+                        <button
+                          type="button"
+                          onClick={() => handleToggleAdminDashboardAccess(username, false)}
+                          className="p-1.5 rounded-lg text-slate-400 hover:text-rose-400 hover:bg-rose-500/15 transition cursor-pointer ml-2"
+                          title="Admin-Freischaltung aufheben"
+                        >
+                          <Trash2 className="w-4 h-4" />
+                        </button>
+                      </div>
+                    );
+                  })}
+                </div>
+              )}
+            </div>
+          </div>
+        </div>
+      )}
+
+      {/* SUB-TAB 6: SICHERHEIT, DATENBANK & 2FA */}
+      {adminSubTab === 'settings' && (
+        <div className="space-y-5 no-print">
           <div className="grid grid-cols-1 lg:grid-cols-12 gap-5">
             <div className="lg:col-span-7 bg-slate-900 border border-slate-800 rounded-2xl p-5 space-y-5">
               <div>
@@ -3463,7 +3931,39 @@ export const AdminView: React.FC<AdminViewProps> = ({
           setAdminSubItemsParent(null);
           setAdminQuickSpotItem(parentItem);
         }}
+        onCloneParentItem={(parentItem) => {
+          setAdminSubItemsParent(null);
+          setCloningItem(parentItem);
+        }}
       />
+
+      {/* Bestätigungsfenster zum Klonen eines Artikels inkl. Unterartikeln */}
+      {cloningItem && (
+        <CloneItemModal
+          sourceItem={cloningItem}
+          items={items}
+          categories={activeCategories}
+          onClose={() => setCloningItem(null)}
+          onConfirmClone={handleConfirmClone}
+          onOpenLocationScanner={(currentLoc, applyLoc) => {
+            // Scanner für Stellplatz-Auswahl öffnen
+            setAdminSelectedSpot(null);
+            setAdminQuickSpotItem({
+              id: 'temp-clone-target',
+              name: cloningItem.name,
+              category: cloningItem.category,
+              unit: cloningItem.unit,
+              allowFractions: false,
+              isReturnable: false,
+              quantity: 0,
+              minStock: 0,
+              location: currentLoc,
+              aliases: [],
+              updatedAt: new Date().toISOString(),
+            });
+          }}
+        />
+      )}
     </div>
   );
 };

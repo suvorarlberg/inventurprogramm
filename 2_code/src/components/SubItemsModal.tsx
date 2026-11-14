@@ -2,6 +2,7 @@ import React, { useMemo, useState } from 'react';
 import {
   Box,
   Check,
+  Copy,
   ListPlus,
   MapPin,
   PackagePlus,
@@ -23,6 +24,7 @@ interface SubItemsModalProps {
   onAssignExistingItemToParent: (itemId: string, parentItem: InventoryItem | null) => void;
   onDeleteSubItem?: (itemId: string) => void;
   onChangeParentLocationRequest?: (parentItem: InventoryItem) => void;
+  onCloneParentItem?: (parentItem: InventoryItem) => void;
 }
 
 /**
@@ -113,6 +115,7 @@ export const SubItemsModal: React.FC<SubItemsModalProps> = ({
   onAssignExistingItemToParent,
   onDeleteSubItem,
   onChangeParentLocationRequest,
+  onCloneParentItem,
 }) => {
   const [addTab, setAddTab] = useState<'single' | 'bulk' | 'existing'>('single');
   const [subName, setSubName] = useState('');
@@ -244,7 +247,18 @@ export const SubItemsModal: React.FC<SubItemsModalProps> = ({
                     className="inline-flex items-center gap-1 text-[11px] font-semibold px-2 py-0.5 rounded-lg bg-slate-800 hover:bg-slate-700 text-sky-300 border border-slate-700 cursor-pointer"
                   >
                     <QrCode className="w-3 h-3" />
-                    <span>Stellplatz für Kiste + Inhalt wählen</span>
+                    <span>Stellplatz wählen</span>
+                  </button>
+                )}
+                {onCloneParentItem && (
+                  <button
+                    type="button"
+                    onClick={() => onCloneParentItem(parentItem)}
+                    className="inline-flex items-center gap-1 text-[11px] font-semibold px-2 py-0.5 rounded-lg bg-slate-800 hover:bg-slate-700 text-amber-300 border border-slate-700 cursor-pointer"
+                    title="Diese Kiste inkl. aller Unterartikel klonen"
+                  >
+                    <Copy className="w-3 h-3" />
+                    <span>Kiste inkl. Inhalt klonen</span>
                   </button>
                 )}
               </div>

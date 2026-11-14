@@ -8,6 +8,7 @@ import {
   InventoryTransaction,
   KellerlisteProject,
   MemberAccount,
+  SpiceFillLevel,
   TransactionLineItem,
 } from './types';
 import {
@@ -18,7 +19,10 @@ import {
   DEFAULT_TRANSACTIONS,
   LEGACY_DEMO_ITEM_IDS,
   LEGACY_DEMO_TX_IDS,
+  buildAdminAccount,
+  normalizeUsernameForComparison,
   reconcileMemberAccounts,
+  resolveMemberPermissions,
 } from './data/defaultData';
 import { roundStock, toPrimaryUnitQuantity } from './utils/units';
 import {
@@ -40,18 +44,44 @@ import { HistoryLogView } from './components/HistoryLogView';
 import { ShoppingListView } from './components/ShoppingListView';
 import { AdminView } from './components/AdminView';
 import { MemberLoginView } from './components/MemberLoginView';
+import { AdminUnlockModal } from './components/AdminUnlockModal';
 
 const STORAGE_KEYS = {
   ITEMS: 'vk_inventory_items_v2',
   TRANSACTIONS: 'vk_inventory_transactions_v2',
   SETTINGS: 'vk_app_settings_v1',
   LOGGED_IN_MEMBER: 'vk_logged_in_member_v1',
+  ACTIVE_TAB: 'vk_active_tab_v1',
+  ADMIN_UNLOCKED: 'vk_admin_unlocked_v1',
 };
 
 export const App: React.FC = () => {
-  const [activeTab, setActiveTab] = useState<ActiveTab>('booking');
-  const [isAdminUnlocked, setIsAdminUnlocked] = useState(false);
+  const [activeTab, setActiveTab] = useState<ActiveTab>(() => {
+    try {
+      const saved = localStorage.getItem(STORAGE_KEYS.ACTIVE_TAB) as ActiveTab | null;
+      if (
+        saved === 'booking' ||
+        saved === 'kellerliste' ||
+        saved === 'history' ||
+        saved === 'shopping' ||
+        saved === 'admin'
+      ) {
+        return saved;
+      }
+      return 'booking';
+    } catch {
+      return 'booking';
+    }
+  });
+  const [isAdminUnlocked, setIsAdminUnlocked] = useState<boolean>(() => {
+    try {
+      return localStorage.getItem(STORAGE_KEYS.ADMIN_UNLOCKED) === 'true';
+    } catch {
+      return false;
+    }
+  });
   const [initial2FAVerified, setInitial2FAVerified] = useState(false);
+  const [showAdminUnlockModal, setShowAdminUnlockModal] = useState(false);
   const [selectedReturnTxId, setSelectedReturnTxId] = useState<string | null>(null);
   const [scannedLocationCode, setScannedLocationCode] = useState<string | null>(() => {
     try {
@@ -295,6 +325,26 @@ export const App: React.FC = () => {
   useEffect(() => {
     localStorage.setItem(STORAGE_KEYS.SETTINGS, JSON.stringify(settings));
   }, [settings]);
+
+  useEffect(() => {
+    try {
+      localStorage.setItem(STORAGE_KEYS.ACTIVE_TAB, activeTab);
+    } catch {
+      // Ignorieren
+    }
+  }, [activeTab]);
+
+  useEffect(() => {
+    try {
+      if (isAdminUnlocked) {
+        localStorage.setItem(STORAGE_KEYS.ADMIN_UNLOCKED, 'true');
+      } else {
+        localStorage.removeItem(STORAGE_KEYS.ADMIN_UNLOCKED);
+      }
+    } catch {
+      // Ignorieren
+    }
+  }, [isAdminUnlocked]);
 
   const hasCloudConfig = Boolean(settings.pocketbaseUrl?.trim());
 
@@ -818,14 +868,23 @@ export const App: React.FC = () => {
   }
 
   function handleUpdateItemLocation(itemId: string, location?: string) {
+    handleBulkUpdateItemLocations([itemId], location);
+  }
+
+  function handleBulkUpdateItemLocations(itemIds: string[], location?: string) {
+    if (itemIds.length === 0) return;
     const now = new Date().toISOString();
     const cleanLoc = location?.trim() ? location.trim() : undefined;
-    const targetItem = items.find((i) => i.id === itemId);
-    const rootParentId = targetItem?.parentItemId || itemId;
+    const targetIds = new Set(itemIds);
+    const rootParentIds = new Set<string>();
+    for (const id of itemIds) {
+      const targetItem = items.find((i) => i.id === id);
+      rootParentIds.add(targetItem?.parentItemId || id);
+    }
 
-    // Aktualisiere den Stellplatz sowohl für die Kiste (Überartikel) als auch für alle Unterartikel in derselben Kiste
+    // Aktualisiere den Stellplatz sowohl für die ausgewählten Artikel/Kisten als auch für alle Unterartikel in denselben Kisten
     const nextItems = items.map((i) =>
-      i.id === itemId || i.id === rootParentId || i.parentItemId === rootParentId
+      targetIds.has(i.id) || rootParentIds.has(i.id) || (i.parentItemId && rootParentIds.has(i.parentItemId))
         ? {
             ...i,
             location: cleanLoc,
@@ -833,6 +892,39 @@ export const App: React.FC = () => {
           }
         : i
     );
+    setItems(nextItems);
+    if (hasCloudConfig && navigator.onLine) {
+      pushToPocketBase(settings, nextItems, transactions).catch(() => {});
+    }
+  }
+
+  function handleBulkUpsertItems(itemsToSave: InventoryItem[]) {
+    if (itemsToSave.length === 0) return;
+    const now = new Date().toISOString();
+    const nextMap = new Map<string, InventoryItem>();
+    for (const existing of items) {
+      nextMap.set(existing.id, existing);
+    }
+    for (const rawItem of itemsToSave) {
+      const parentObj = rawItem.parentItemId
+        ? nextMap.get(rawItem.parentItemId) || items.find((p) => p.id === rawItem.parentItemId)
+        : undefined;
+      const resolvedLocation = parentObj ? parentObj.location || rawItem.location : rawItem.location;
+      nextMap.set(rawItem.id, {
+        ...rawItem,
+        location: resolvedLocation,
+        updatedAt: rawItem.updatedAt || now,
+      });
+    }
+    // Vererbe Stellplatz von Kisten an deren Unterartikel
+    const nextItems = Array.from(nextMap.values()).map((i) => {
+      if (!i.parentItemId) return i;
+      const parent = nextMap.get(i.parentItemId);
+      if (parent && i.location !== parent.location) {
+        return { ...i, location: parent.location, updatedAt: now };
+      }
+      return i;
+    });
     setItems(nextItems);
     if (hasCloudConfig && navigator.onLine) {
       pushToPocketBase(settings, nextItems, transactions).catch(() => {});
@@ -856,9 +948,15 @@ export const App: React.FC = () => {
   }
 
   function handleAssignItemToParent(itemId: string, parentItem: InventoryItem | null) {
+    handleBulkAssignItemsToParent([itemId], parentItem);
+  }
+
+  function handleBulkAssignItemsToParent(itemIds: string[], parentItem: InventoryItem | null) {
+    if (itemIds.length === 0) return;
+    const idSet = new Set(itemIds);
     const now = new Date().toISOString();
     const nextItems = items.map((i) =>
-      i.id === itemId
+      idSet.has(i.id) && (!parentItem || i.id !== parentItem.id)
         ? {
             ...i,
             parentItemId: parentItem ? parentItem.id : undefined,
@@ -943,23 +1041,140 @@ export const App: React.FC = () => {
     [settings.projectLists]
   );
 
-  // Vor dem Eintritt in das Programm muss man sich mit vorname.nachname@schuelerunion.at + Passwort anmelden
+  // Ermittle aktuellen Account & dessen Berechtigungen (inkl. zentralem Admin-Account)
+  const effectiveLoggedInMember = useMemo<MemberAccount | null>(() => {
+    if (!loggedInMember) return null;
+    if (
+      loggedInMember.isAdmin ||
+      loggedInMember.username.toLowerCase() === 'admin' ||
+      loggedInMember.username.toLowerCase() ===
+        (settings.adminUsername || 'admin@schuelerunion.at').toLowerCase()
+    ) {
+      return buildAdminAccount(settings);
+    }
+    const found = activeMemberAccounts.find(
+      (acc) =>
+        acc.username.toLowerCase() === loggedInMember.username.toLowerCase() ||
+        acc.name.toLowerCase() === loggedInMember.name.toLowerCase()
+    );
+    return found || loggedInMember;
+  }, [loggedInMember, activeMemberAccounts, settings.adminPassword, settings.adminUsername]);
+
+  const currentPermissions = useMemo(
+    () => resolveMemberPermissions(effectiveLoggedInMember),
+    [effectiveLoggedInMember]
+  );
+
+  const isCurrentUserAdmin = Boolean(effectiveLoggedInMember?.isAdmin);
+
+  const canAccessAdminDashboard =
+    isCurrentUserAdmin ||
+    (Boolean(effectiveLoggedInMember) &&
+      (settings.adminDashboardUsernames ?? []).some(
+        (username) =>
+          normalizeUsernameForComparison(username) ===
+          normalizeUsernameForComparison(effectiveLoggedInMember!.username)
+      ));
+
+  async function handleConsumeBackupCode(usedCode: string): Promise<boolean> {
+    const stringCodes = (settings.totpBackupCodes || []).filter((c) => c !== usedCode);
+    const twoFactorCodes = (settings.twoFactor?.backupCodes || []).map((bc) =>
+      bc.code === usedCode ? { ...bc, used: true, usedAt: new Date().toISOString() } : bc
+    );
+    const updated: AppSettings = {
+      ...settings,
+      totpBackupCodes: stringCodes,
+      twoFactor: settings.twoFactor
+        ? { ...settings.twoFactor, backupCodes: twoFactorCodes }
+        : undefined,
+    };
+    setSettings(updated);
+    try {
+      localStorage.setItem(STORAGE_KEYS.SETTINGS, JSON.stringify(updated));
+    } catch {
+      // Ignorieren
+    }
+    if (updated.pocketbaseUrl && navigator.onLine) {
+      pushConfigToPocketBase(updated).catch(() => {});
+    }
+    return true;
+  }
+
+  const handleUpdateItemSpiceLevel = useCallback((itemId: string, level: SpiceFillLevel) => {
+    setItems((prev) =>
+      prev.map((it) =>
+        it.id === itemId
+          ? { ...it, openPackLevel: level, updatedAt: new Date().toISOString() }
+          : it
+      )
+    );
+  }, []);
+
+  // Falls sich der zentrale Admin-Account einloggt, entsperre den Admin-Bereich automatisch
+  useEffect(() => {
+    if (isCurrentUserAdmin && !isAdminUnlocked) {
+      setIsAdminUnlocked(true);
+    }
+  }, [isCurrentUserAdmin, isAdminUnlocked]);
+
+  // Stelle sicher, dass der aktive Tab für die Berechtigungen des eingeloggten Accounts erlaubt ist
+  useEffect(() => {
+    if (!effectiveLoggedInMember) return;
+    const allowedTabs: ActiveTab[] = [];
+    if (
+      currentPermissions.canViewInventory ||
+      currentPermissions.canBook ||
+      currentPermissions.canRestock
+    ) {
+      allowedTabs.push('booking');
+    }
+    if (currentPermissions.canViewKellerlisten) allowedTabs.push('kellerliste');
+    if (currentPermissions.canViewHistory) allowedTabs.push('history');
+    if (currentPermissions.canViewShoppingList || currentPermissions.canRestock) {
+      allowedTabs.push('shopping');
+    }
+    if (
+      isCurrentUserAdmin ||
+      isAdminUnlocked ||
+      canAccessAdminDashboard ||
+      currentPermissions.canDoInitialInventory
+    ) {
+      allowedTabs.push('admin');
+    }
+    if (allowedTabs.length > 0 && !allowedTabs.includes(activeTab)) {
+      setActiveTab(allowedTabs[0]);
+    }
+  }, [
+    effectiveLoggedInMember,
+    currentPermissions,
+    isCurrentUserAdmin,
+    isAdminUnlocked,
+    canAccessAdminDashboard,
+    activeTab,
+  ]);
+
+  // Vor dem Eintritt in das Programm muss man sich mit vorname.nachname@schuelerunion.at (oder Admin-Account) + Passwort anmelden
   if (!loggedInMember && !initial2FAVerified) {
     return (
       <MemberLoginView
         clubName={settings.clubName}
         settings={settings}
         memberAccounts={activeMemberAccounts}
+        onConsumeBackupCode={handleConsumeBackupCode}
         onLoginSuccess={(account) => {
           setLoggedInMember(account);
           localStorage.setItem(STORAGE_KEYS.LOGGED_IN_MEMBER, JSON.stringify(account));
           localStorage.setItem('vk_last_person_name', account.name);
+          if (account.isAdmin) {
+            setIsAdminUnlocked(true);
+            localStorage.setItem(STORAGE_KEYS.ADMIN_UNLOCKED, 'true');
+          }
         }}
       />
     );
   }
 
-  const currentUserName = loggedInMember?.name || 'Admin';
+  const currentUserName = effectiveLoggedInMember?.name || loggedInMember?.name || 'Admin';
 
   return (
     <div className="min-h-screen bg-slate-950 text-slate-100 flex flex-col">
@@ -976,10 +1191,16 @@ export const App: React.FC = () => {
         isSyncing={isSyncing}
         onManualSync={() => syncWithCloud()}
         currentUserName={currentUserName}
+        isCurrentUserAdmin={isCurrentUserAdmin}
+        isAdminUnlocked={isAdminUnlocked}
+        canAccessAdminDashboard={canAccessAdminDashboard}
+        onOpenAdminUnlockModal={() => setShowAdminUnlockModal(true)}
+        userPermissions={currentPermissions}
         onLogout={() => {
           logoutFromPocketBase(settings);
           setLoggedInMember(null);
           localStorage.removeItem(STORAGE_KEYS.LOGGED_IN_MEMBER);
+          localStorage.removeItem(STORAGE_KEYS.ADMIN_UNLOCKED);
           setIsAdminUnlocked(false);
         }}
       />
@@ -991,14 +1212,17 @@ export const App: React.FC = () => {
             transactions={transactions}
             settings={settings}
             currentUserName={currentUserName}
+            userPermissions={currentPermissions}
             selectedReturnTxId={selectedReturnTxId}
             onClearSelectedReturnTx={() => setSelectedReturnTxId(null)}
             onExecuteBooking={handleExecuteBooking}
             onUpdateItemExpiry={handleUpdateItemExpiry}
             onUpdateItemLocation={handleUpdateItemLocation}
+            onBulkUpdateItemLocations={handleBulkUpdateItemLocations}
             onAddSubItems={handleAddSubItems}
             onAssignItemToParent={handleAssignItemToParent}
             onDeleteItem={handleDeleteItem}
+            onUpdateItemSpiceLevel={handleUpdateItemSpiceLevel}
             scannedLocationCode={scannedLocationCode}
             onClearScannedLocationCode={() => setScannedLocationCode(null)}
           />
@@ -1029,6 +1253,7 @@ export const App: React.FC = () => {
           <ShoppingListView
             items={items}
             onExecuteBooking={handleExecuteBooking}
+            canRestock={currentPermissions.canRestock}
           />
         )}
 
@@ -1037,16 +1262,24 @@ export const App: React.FC = () => {
             items={items}
             transactions={transactions}
             settings={settings}
-            isUnlocked={isAdminUnlocked}
+            isUnlocked={isAdminUnlocked || isCurrentUserAdmin}
+            isCurrentUserAdmin={isCurrentUserAdmin}
+            canDoInitialInventory={currentPermissions.canDoInitialInventory}
             onUnlock={() => setIsAdminUnlocked(true)}
-            onLock={() => setIsAdminUnlocked(false)}
+            onLock={() => {
+              localStorage.removeItem(STORAGE_KEYS.ADMIN_UNLOCKED);
+              setIsAdminUnlocked(false);
+            }}
             initial2FAVerified={initial2FAVerified}
             onClearInitial2FAVerified={() => setInitial2FAVerified(false)}
             onSaveInitialInventory={handleSaveInitialInventory}
             onUpsertItem={handleUpsertItem}
+            onBulkUpsertItems={handleBulkUpsertItems}
             onUpdateItemLocation={handleUpdateItemLocation}
+            onBulkUpdateItemLocations={handleBulkUpdateItemLocations}
             onAddSubItems={handleAddSubItems}
             onAssignItemToParent={handleAssignItemToParent}
+            onBulkAssignItemsToParent={handleBulkAssignItemsToParent}
             onDeleteItem={handleDeleteItem}
             onBulkImportItems={handleBulkImportItems}
             onUpdateSettings={(newSettings, deletedCatId) => {
@@ -1062,6 +1295,29 @@ export const App: React.FC = () => {
           />
         )}
       </main>
+
+      {/* Admin Unlock Modal mit Passwort & 2FA / Notfallcode wie in SiP */}
+      <AdminUnlockModal
+        isOpen={showAdminUnlockModal}
+        onClose={() => setShowAdminUnlockModal(false)}
+        adminPassword={settings.adminPassword}
+        totpEnabled={Boolean(
+          settings.totpEnabled || settings.twoFactor?.enabled
+        )}
+        totpSecret={settings.totpSecret || settings.twoFactor?.secret || ''}
+        totpBackupCodes={
+          settings.totpBackupCodes ||
+          (settings.twoFactor?.backupCodes
+            ? settings.twoFactor.backupCodes.filter((c) => !c.used).map((c) => c.code)
+            : [])
+        }
+        onConsumeBackupCode={handleConsumeBackupCode}
+        onUnlockSuccess={() => {
+          setIsAdminUnlocked(true);
+          localStorage.setItem(STORAGE_KEYS.ADMIN_UNLOCKED, 'true');
+          setActiveTab('admin');
+        }}
+      />
     </div>
   );
 };

@@ -2,11 +2,13 @@ import React, { useMemo, useState } from 'react';
 import {
   Box,
   Check,
+  CheckSquare,
   Filter,
   MapPin,
   Plus,
   QrCode,
   Search,
+  Square,
   Trash2,
   X,
 } from 'lucide-react';
@@ -23,6 +25,7 @@ interface LocationAssignmentModalProps {
   items: InventoryItem[];
   onClose: () => void;
   onAssignItemToSpot: (itemId: string, spot: StorageLocationSpot | null) => void;
+  onAssignMultipleItemsToSpot?: (itemIds: string[], spot: StorageLocationSpot | null) => void;
   onFilterBySpot?: (spot: StorageLocationSpot) => void;
   onSwitchSpotRequest?: () => void;
   onManageSubItems?: (parentItem: InventoryItem) => void;
@@ -33,11 +36,14 @@ export const LocationAssignmentModal: React.FC<LocationAssignmentModalProps> = (
   items,
   onClose,
   onAssignItemToSpot,
+  onAssignMultipleItemsToSpot,
   onFilterBySpot,
   onSwitchSpotRequest,
   onManageSubItems,
 }) => {
   const [searchQuery, setSearchQuery] = useState('');
+  const [onlyUnassignedFilter, setOnlyUnassignedFilter] = useState(false);
+  const [selectedItemIds, setSelectedItemIds] = useState<string[]>([]);
 
   // Gruppiere Hauptartikel / Kisten auf diesem Stellplatz (Unterartikel hängen an ihrer Kiste)
   const assignedItems = useMemo(() => {
@@ -59,6 +65,7 @@ export const LocationAssignmentModal: React.FC<LocationAssignmentModalProps> = (
       if (itemMatchesLocationSpot(item.location, spot)) return false;
       // Unterartikel ohne Suche nicht doppelt auflisten, da sie über ihre Kiste verschoben werden
       if (!q && item.parentItemId) return false;
+      if (onlyUnassignedFilter && item.location?.trim()) return false;
       if (!q) return true;
       return (
         item.name.toLowerCase().includes(q) ||
@@ -66,7 +73,36 @@ export const LocationAssignmentModal: React.FC<LocationAssignmentModalProps> = (
         item.aliases.some((a) => a.toLowerCase().includes(q))
       );
     });
-  }, [items, spot, searchQuery]);
+  }, [items, spot, searchQuery, onlyUnassignedFilter]);
+
+  function toggleSelectItem(id: string) {
+    setSelectedItemIds((prev) =>
+      prev.includes(id) ? prev.filter((x) => x !== id) : [...prev, id]
+    );
+  }
+
+  function handleSelectAllVisible() {
+    const visibleIds = otherItems.map((i) => i.id);
+    const allSelected =
+      visibleIds.length > 0 && visibleIds.every((id) => selectedItemIds.includes(id));
+    if (allSelected) {
+      setSelectedItemIds((prev) => prev.filter((id) => !visibleIds.includes(id)));
+    } else {
+      setSelectedItemIds((prev) => Array.from(new Set([...prev, ...visibleIds])));
+    }
+  }
+
+  function handleAssignSelectedBulk() {
+    if (!spot || selectedItemIds.length === 0) return;
+    if (onAssignMultipleItemsToSpot) {
+      onAssignMultipleItemsToSpot(selectedItemIds, spot);
+    } else {
+      for (const id of selectedItemIds) {
+        onAssignItemToSpot(id, spot);
+      }
+    }
+    setSelectedItemIds([]);
+  }
 
   if (!spot) return null;
 
@@ -219,16 +255,70 @@ export const LocationAssignmentModal: React.FC<LocationAssignmentModalProps> = (
           )}
         </div>
 
-        {/* 2. Nachträglich Artikel mit diesem Stellplatz verbinden */}
+        {/* 2. Nachträglich Artikel (einzeln oder mehrere auf einmal) mit diesem Stellplatz verbinden */}
         <div className="space-y-2.5 pt-2 border-t border-slate-800">
-          <div>
-            <h4 className="text-xs font-bold uppercase tracking-wider text-sky-400">
-              Artikel mit {spot.code} verbinden (1 Klick ohne Tippen)
-            </h4>
-            <p className="text-[11px] text-slate-400">
-              Tippe auf „+ Zuweisen“, um bestehende Artikel auf diesen Stellplatz zu legen:
-            </p>
+          <div className="flex flex-col sm:flex-row sm:items-center justify-between gap-2">
+            <div>
+              <h4 className="text-xs font-bold uppercase tracking-wider text-sky-400">
+                Artikel (einzeln oder mehrere) mit {spot.code} verbinden
+              </h4>
+              <p className="text-[11px] text-slate-400">
+                Hake mehrere Artikel an oder klicke rechts direkt auf „+ Hierher legen“:
+              </p>
+            </div>
+            <div className="flex items-center gap-1.5 flex-wrap">
+              <button
+                type="button"
+                onClick={() => setOnlyUnassignedFilter((v) => !v)}
+                className={`px-2.5 py-1 rounded-lg text-[11px] font-semibold border cursor-pointer transition ${
+                  onlyUnassignedFilter
+                    ? 'bg-amber-500 text-slate-950 border-amber-400'
+                    : 'bg-slate-950 text-slate-300 border-slate-700 hover:border-slate-600'
+                }`}
+              >
+                {onlyUnassignedFilter ? '✓ Nur ohne Stellplatz' : 'Nur ohne Stellplatz'}
+              </button>
+              {otherItems.length > 0 && (
+                <button
+                  type="button"
+                  onClick={handleSelectAllVisible}
+                  className="px-2.5 py-1 rounded-lg text-[11px] font-semibold bg-slate-800 hover:bg-slate-700 text-sky-300 border border-slate-700 cursor-pointer"
+                >
+                  {otherItems.every((i) => selectedItemIds.includes(i.id))
+                    ? 'Auswahl aufheben'
+                    : `Alle (${otherItems.length}) markieren`}
+                </button>
+              )}
+            </div>
           </div>
+
+          {selectedItemIds.length > 0 && (
+            <div className="p-2.5 rounded-xl bg-sky-500/15 border border-sky-500/40 flex flex-col sm:flex-row items-stretch sm:items-center justify-between gap-2">
+              <div className="text-xs text-sky-200 font-semibold">
+                {selectedItemIds.length} Artikel ausgewählt für Stellplatz{' '}
+                <span className="font-mono font-bold text-white">{spot.code}</span>
+              </div>
+              <div className="flex items-center gap-1.5">
+                <button
+                  type="button"
+                  onClick={() => setSelectedItemIds([])}
+                  className="px-2.5 py-1.5 rounded-lg bg-slate-900 hover:bg-slate-800 text-slate-300 text-xs cursor-pointer"
+                >
+                  Auswahl löschen
+                </button>
+                <button
+                  type="button"
+                  onClick={handleAssignSelectedBulk}
+                  className="flex-1 sm:flex-initial flex items-center justify-center gap-1.5 px-3.5 py-1.5 rounded-xl bg-sky-500 hover:bg-sky-400 text-slate-950 font-bold text-xs shadow cursor-pointer"
+                >
+                  <Check className="w-4 h-4 stroke-[2.5]" />
+                  <span>
+                    Alle {selectedItemIds.length} Artikel auf {spot.code} legen
+                  </span>
+                </button>
+              </div>
+            </div>
+          )}
 
           <div className="relative">
             <Search className="w-3.5 h-3.5 text-slate-400 absolute left-3 top-1/2 -translate-y-1/2" />
@@ -250,33 +340,60 @@ export const LocationAssignmentModal: React.FC<LocationAssignmentModalProps> = (
               otherItems.map((item) => {
                 const currentParsed = parseStorageLocationInput(item.location);
                 const subCount = items.filter((s) => s.parentItemId === item.id).length;
+                const isSelected = selectedItemIds.includes(item.id);
                 return (
                   <div
                     key={item.id}
-                    className="p-2.5 rounded-xl bg-slate-950 border border-slate-800 hover:border-slate-700 flex items-center justify-between gap-2"
+                    onClick={() => toggleSelectItem(item.id)}
+                    className={`p-2.5 rounded-xl border flex items-center justify-between gap-2 cursor-pointer transition ${
+                      isSelected
+                        ? 'bg-sky-500/15 border-sky-500/50'
+                        : 'bg-slate-950 border-slate-800 hover:border-slate-700'
+                    }`}
                   >
-                    <div className="min-w-0">
-                      <div className="flex items-center gap-1.5 flex-wrap">
-                        <span className="font-semibold text-xs sm:text-sm text-white truncate">
-                          {item.name}
-                        </span>
-                        {subCount > 0 && (
-                          <span className="inline-flex items-center gap-1 text-[10px] font-semibold px-1.5 py-0.5 rounded bg-amber-500/20 text-amber-300 border border-amber-500/30">
-                            <Box className="w-3 h-3" />
-                            <span>inkl. {subCount} Unterart.</span>
-                          </span>
+                    <div className="flex items-center gap-2.5 min-w-0">
+                      <button
+                        type="button"
+                        onClick={(e) => {
+                          e.stopPropagation();
+                          toggleSelectItem(item.id);
+                        }}
+                        className="text-sky-400 shrink-0 cursor-pointer"
+                        title="Für Mehrfach-Zuweisung auswählen"
+                      >
+                        {isSelected ? (
+                          <CheckSquare className="w-4 h-4 text-sky-400" />
+                        ) : (
+                          <Square className="w-4 h-4 text-slate-500" />
                         )}
-                      </div>
-                      <div className="text-[11px] text-slate-400 truncate">
-                        Bestand: {formatStockDisplay(item).primaryText}
-                        {item.location
-                          ? ` • Aktuell: ${currentParsed ? currentParsed.code : item.location}`
-                          : ' • Noch kein Stellplatz'}
+                      </button>
+                      <div className="min-w-0">
+                        <div className="flex items-center gap-1.5 flex-wrap">
+                          <span className="font-semibold text-xs sm:text-sm text-white truncate">
+                            {item.name}
+                          </span>
+                          {subCount > 0 && (
+                            <span className="inline-flex items-center gap-1 text-[10px] font-semibold px-1.5 py-0.5 rounded bg-amber-500/20 text-amber-300 border border-amber-500/30">
+                              <Box className="w-3 h-3" />
+                              <span>inkl. {subCount} Unterart.</span>
+                            </span>
+                          )}
+                        </div>
+                        <div className="text-[11px] text-slate-400 truncate">
+                          Bestand: {formatStockDisplay(item).primaryText}
+                          {item.location
+                            ? ` • Aktuell: ${currentParsed ? currentParsed.code : item.location}`
+                            : ' • Noch kein Stellplatz'}
+                        </div>
                       </div>
                     </div>
                     <button
                       type="button"
-                      onClick={() => onAssignItemToSpot(item.id, spot)}
+                      onClick={(e) => {
+                        e.stopPropagation();
+                        onAssignItemToSpot(item.id, spot);
+                        setSelectedItemIds((prev) => prev.filter((id) => id !== item.id));
+                      }}
                       className="px-3 py-1.5 rounded-xl bg-sky-500/20 hover:bg-sky-500 text-sky-300 hover:text-slate-950 font-bold text-xs border border-sky-500/40 transition flex items-center gap-1 cursor-pointer shrink-0"
                     >
                       <Plus className="w-3.5 h-3.5" />

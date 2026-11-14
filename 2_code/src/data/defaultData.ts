@@ -4,15 +4,70 @@ import {
   AppSettings,
   InventoryTransaction,
   MemberAccount,
+  MemberPermissions,
 } from '../types';
+
+export const DEFAULT_MEMBER_PERMISSIONS: MemberPermissions = {
+  canViewInventory: true,
+  canViewKellerlisten: true,
+  canViewHistory: true,
+  canViewShoppingList: true,
+  canBook: true,
+  canRestock: true,
+  canDoInitialInventory: false,
+};
+
+export const ADMIN_FULL_PERMISSIONS: MemberPermissions = {
+  canViewInventory: true,
+  canViewKellerlisten: true,
+  canViewHistory: true,
+  canViewShoppingList: true,
+  canBook: true,
+  canRestock: true,
+  canDoInitialInventory: true,
+};
+
+export function resolveMemberPermissions(account?: MemberAccount | null): MemberPermissions {
+  if (!account) return DEFAULT_MEMBER_PERMISSIONS;
+  if (account.isAdmin) return { ...ADMIN_FULL_PERMISSIONS };
+  return {
+    ...DEFAULT_MEMBER_PERMISSIONS,
+    ...(account.permissions || {}),
+  };
+}
+
+export function buildAdminAccount(settings?: Partial<AppSettings>): MemberAccount {
+  return {
+    name: 'Admin',
+    username: settings?.adminUsername?.trim() || 'admin@schuelerunion.at',
+    password: settings?.adminPassword || 'admin',
+    isAdmin: true,
+    permissions: { ...ADMIN_FULL_PERMISSIONS },
+  };
+}
 
 export const CATEGORIES: CategoryInfo[] = [
   {
     id: 'drinks_food',
-    label: 'Getränke & Lebensmittel',
-    shortLabel: 'Getränke & Essen',
-    description: 'Kisten, Einzelflaschen, Kaffee, Snacks',
+    label: 'Getränke & Flaschen',
+    shortLabel: 'Getränke',
+    description: 'Kisten, Einzelflaschen, Kästen, Dosen',
     color: 'amber',
+    requiresExpiryDate: true,
+    defaultAllowFractions: true,
+    defaultUnit: 'Kiste',
+    defaultUnitProfile: 'beverage',
+  },
+  {
+    id: 'spices_kitchen',
+    label: 'Küche, Gewürze & Zutaten',
+    shortLabel: 'Küche & Gewürze',
+    description: 'Gewürze, Salz, Zucker, Öle, Soßen (mit Füllstands-Ampel & Vorrat)',
+    color: 'rose',
+    requiresExpiryDate: true,
+    defaultAllowFractions: false,
+    defaultUnit: 'Dose',
+    defaultUnitProfile: 'spice_bulk',
   },
   {
     id: 'consumables',
@@ -20,6 +75,9 @@ export const CATEGORIES: CategoryInfo[] = [
     shortLabel: 'Verbrauch',
     description: 'Müllsäcke, Klebeband, Servietten, Reinigungsmittel',
     color: 'emerald',
+    defaultAllowFractions: true,
+    defaultUnit: 'Packung',
+    defaultUnitProfile: 'consumable',
   },
   {
     id: 'equipment',
@@ -28,6 +86,9 @@ export const CATEGORIES: CategoryInfo[] = [
     description: 'Leihgeräte, Bierzeltgarnituren, Kabel, Technik (wird zurückgebracht)',
     color: 'sky',
     defaultReturnable: true,
+    defaultAllowFractions: false,
+    defaultUnit: 'Stück',
+    defaultUnitProfile: 'piece',
   },
 ];
 
@@ -164,11 +225,13 @@ export const DEFAULT_MEMBER_ACCOUNTS: MemberAccount[] = DEFAULT_ALLOWED_MEMBERS.
   name,
   username: buildMemberUsername(name),
   password: INITIAL_PASSWORDS_BY_NAME[name] || 'SU-K7m4-9X',
+  isAdmin: false,
+  permissions: { ...DEFAULT_MEMBER_PERMISSIONS },
 }));
 
 /**
  * Stellt sicher, dass für jeden Namen in `allowedMembers` ein vollständiger `MemberAccount`
- * (mit Benutzername nach Schema vorname1-vorname2.nachname@schuelerunion.at und Passwort) existiert
+ * (mit Benutzername nach Schema vorname1-vorname2.nachname@schuelerunion.at, Passwort & Berechtigungen) existiert
  * und gibt die Liste alphabetisch sortiert zurück.
  */
 export function reconcileMemberAccounts(
@@ -191,6 +254,10 @@ export function reconcileMemberAccounts(
           name: acc.name.trim(),
           username: buildMemberUsername(acc.name),
           password: acc.password?.trim() || generateRandomMemberPassword(),
+          isAdmin: Boolean(acc.isAdmin),
+          permissions: acc.isAdmin
+            ? { ...ADMIN_FULL_PERMISSIONS }
+            : { ...DEFAULT_MEMBER_PERMISSIONS, ...(acc.permissions || {}) },
         });
       }
     }
@@ -208,6 +275,10 @@ export function reconcileMemberAccounts(
             existing.password ||
             INITIAL_PASSWORDS_BY_NAME[cleanName] ||
             generateRandomMemberPassword(),
+          isAdmin: Boolean(existing.isAdmin),
+          permissions: existing.isAdmin
+            ? { ...ADMIN_FULL_PERMISSIONS }
+            : { ...DEFAULT_MEMBER_PERMISSIONS, ...(existing.permissions || {}) },
         };
       }
       return {
@@ -215,6 +286,8 @@ export function reconcileMemberAccounts(
         username: buildMemberUsername(cleanName),
         password:
           INITIAL_PASSWORDS_BY_NAME[cleanName] || generateRandomMemberPassword(),
+        isAdmin: false,
+        permissions: { ...DEFAULT_MEMBER_PERMISSIONS },
       };
     })
     .sort((a, b) => a.name.localeCompare(b.name, 'de'));
@@ -223,7 +296,9 @@ export function reconcileMemberAccounts(
 export const DEFAULT_SETTINGS: AppSettings = {
   clubName: 'Vereinskeller',
   adminPassword: 'admin',
+  adminUsername: 'admin@schuelerunion.at',
   adminEmail: '',
+  adminDashboardUsernames: [],
   allowedMembers: DEFAULT_ALLOWED_MEMBERS,
   memberAccounts: DEFAULT_MEMBER_ACCOUNTS,
   projectLists: [],

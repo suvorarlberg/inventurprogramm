@@ -305,3 +305,96 @@ export async function verifyTwoFactorInput(
       'Ungültiger Code. Bitte gib den 6-stelligen Code aus deiner Authenticator-App oder einen ungenutzten Ersatzcode ein.',
   };
 }
+
+// Aliase & SiP-kompatible Hilfsfunktionen
+export const generateTotpCode = generateTotp;
+export const verifyTotpCode = verifyTotp;
+export const getTotpUri = getOtpAuthUrl;
+
+export function formatSecretForDisplay(secret: string): string {
+  return secret.replace(/(.{4})/g, '$1 ').trim();
+}
+
+/**
+ * Bereinigt einen eingegebenen Notfallcode von Bindestrichen, Leerzeichen etc. und wandelt in Großbuchstaben um.
+ */
+export function normalizeBackupCode(code: string): string {
+  return code.replace(/[^A-Za-z0-9]/g, '').toUpperCase();
+}
+
+/**
+ * Überprüft einen Notfallcode gegen eine Liste von Codes (Strings oder BackupCode-Objekte).
+ * Bei Treffer wird der gefundene Code konsumiert, sodass jeder Notfallcode exakt 1x gültig ist.
+ */
+export function verifyAndConsumeBackupCode(
+  arg1: string | (string | BackupCode)[],
+  arg2: string | (string | BackupCode)[] = []
+): { valid: boolean; remainingCodes: string[]; usedCode?: string } {
+  let candidateCode: string;
+  let backupCodes: (string | BackupCode)[];
+
+  if (Array.isArray(arg1)) {
+    backupCodes = arg1;
+    candidateCode = typeof arg2 === 'string' ? arg2 : '';
+  } else {
+    candidateCode = typeof arg1 === 'string' ? arg1 : '';
+    backupCodes = Array.isArray(arg2) ? arg2 : [];
+  }
+
+  const cleanCandidate = normalizeBackupCode(candidateCode);
+  const stringCodes = backupCodes
+    .map((c) => (typeof c === 'string' ? c : !c.used ? c.code : null))
+    .filter(Boolean) as string[];
+
+  if (!cleanCandidate || cleanCandidate.length < 6) {
+    return { valid: false, remainingCodes: stringCodes };
+  }
+
+  const matchIndex = stringCodes.findIndex(
+    (code) => normalizeBackupCode(code) === cleanCandidate
+  );
+
+  if (matchIndex === -1) {
+    return { valid: false, remainingCodes: stringCodes };
+  }
+
+  const usedCode = stringCodes[matchIndex];
+  const remainingCodes = stringCodes.filter((_, idx) => idx !== matchIndex);
+  return { valid: true, remainingCodes, usedCode };
+}
+
+/**
+ * Erstellt eine Textdatei zum Herunterladen der Notfallcodes
+ */
+export function downloadBackupCodesTxt(codes: (string | BackupCode)[], clubName: string = 'Vereinskeller') {
+  const list = codes.map((c) => (typeof c === 'string' ? c : c.code));
+  const content = [
+    `======================================================`,
+    `NOTFALLCODES / ERSATZCODES FÜR DEN ADMIN-ZUGANG`,
+    `${clubName.toUpperCase()}`,
+    `Erstellt am: ${new Date().toLocaleString('de-AT')}`,
+    `======================================================`,
+    ``,
+    `ANWEISUNGEN:`,
+    `- Jeder dieser Codes kann genau EINMAL verwendet werden,`,
+    `  falls du dein Smartphone verlierst oder die Authenticator-App`,
+    `  nicht verfügbar ist.`,
+    `- Bewahre diese Liste sicher auf (z. B. ausdrucken oder im`,
+    `  Passwort-Manager speichern).`,
+    ``,
+    `DEINE NOTFALLCODES:`,
+    ...list.map((c, i) => `  [${(i + 1).toString().padStart(2, ' ')}]  ${c}`),
+    ``,
+    `======================================================`,
+  ].join('\n');
+
+  const blob = new Blob([content], { type: 'text/plain;charset=utf-8' });
+  const url = URL.createObjectURL(blob);
+  const a = document.createElement('a');
+  a.href = url;
+  a.download = `notfallcodes-admin-${new Date().toISOString().slice(0, 10)}.txt`;
+  document.body.appendChild(a);
+  a.click();
+  document.body.removeChild(a);
+  URL.revokeObjectURL(url);
+}

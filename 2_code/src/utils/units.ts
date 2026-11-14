@@ -1,4 +1,4 @@
-import { InventoryItem } from '../types';
+import { InventoryItem, SpiceFillLevel, UnitProfile } from '../types';
 
 export function roundStock(value: number): number {
   return Math.round((value + Number.EPSILON) * 10000) / 10000;
@@ -17,7 +17,72 @@ const PLURAL_MAP: Record<string, string> = {
   Liter: 'Liter',
   Dose: 'Dosen',
   Karton: 'Kartons',
+  Beutel: 'Beutel',
+  Glas: 'Gläser',
 };
+
+export interface SpiceFillConfig {
+  label: string;
+  short: string;
+  badgeClass: string;
+  dotClass: string;
+  percentage: number;
+}
+
+export const SPICE_FILL_CONFIG: Record<SpiceFillLevel, SpiceFillConfig> = {
+  full: {
+    label: 'Voll / Neu (100%)',
+    short: 'Voll (100%)',
+    badgeClass: 'bg-emerald-500/20 text-emerald-300 border-emerald-500/40',
+    dotClass: 'bg-emerald-400',
+    percentage: 100,
+  },
+  half: {
+    label: 'Halbvoll (~50%)',
+    short: 'Halbvoll (~50%)',
+    badgeClass: 'bg-amber-500/20 text-amber-300 border-amber-500/40',
+    dotClass: 'bg-amber-400',
+    percentage: 50,
+  },
+  low: {
+    label: 'Fast leer / Nachkauf (<25%)',
+    short: 'Fast leer (<25%)',
+    badgeClass: 'bg-orange-500/20 text-orange-300 border-orange-500/40',
+    dotClass: 'bg-orange-400',
+    percentage: 20,
+  },
+  empty: {
+    label: 'Leer / Aufgebraucht (0%)',
+    short: 'Leer (0%)',
+    badgeClass: 'bg-rose-500/20 text-rose-300 border-rose-500/40',
+    dotClass: 'bg-rose-400',
+    percentage: 0,
+  },
+};
+
+/**
+ * Ermittelt, ob ein Artikel knapp ist / auf der Einkaufsliste landen sollte.
+ * - Bei Gewürzen & Schüttgut (spice_bulk):
+ *   Berücksichtigt sowohl die geschlossenen Vorratspackungen als auch den Füllstand der offenen Dose!
+ * - Bei anderen Artikeln: Standard-Vergleich quantity < minStock
+ */
+export function isItemLowStock(item: InventoryItem): boolean {
+  if (item.unitProfile === 'spice_bulk') {
+    if (item.quantity < item.minStock) return true;
+    if (item.quantity <= 0) {
+      // Wenn Mindestbestand 0 gefordert ist und der Anbruch noch voll/halbvoll ist, kein Nachkauf
+      if (item.minStock === 0 && (item.openPackLevel === 'full' || item.openPackLevel === 'half')) {
+        return false;
+      }
+      return true;
+    }
+    if (item.quantity <= 1 && (item.openPackLevel === 'low' || item.openPackLevel === 'empty')) {
+      return true;
+    }
+    return false;
+  }
+  return item.quantity <= item.minStock;
+}
 
 export function pluralizeUnit(unit?: string | null, count: number = 1): string {
   if (!unit || typeof unit !== 'string') return '';
@@ -41,6 +106,18 @@ export function formatStockDisplay(item: InventoryItem, quantity: number = item?
 } {
   const safeQty = roundStock(quantity);
   const primaryUnit = item?.unit || 'Stück';
+
+  // Profil für Gewürze, Schüttgut & Küchenbedarf mit Füllstands-Ampel
+  if (item?.unitProfile === 'spice_bulk') {
+    const fullPacks = Math.max(0, Math.floor(safeQty));
+    const openStatus = item.openPackLevel ? SPICE_FILL_CONFIG[item.openPackLevel] : null;
+    return {
+      primaryText: `${fullPacks} ${pluralizeUnit(primaryUnit, fullPacks)} Vorrat`,
+      secondaryText: openStatus
+        ? `Anbruch: ${openStatus.short}`
+        : 'Anbruch: Keine Angabe',
+    };
+  }
 
   if (item?.subUnit && item?.subUnitsPerUnit && item.subUnitsPerUnit > 1) {
     const totalSubUnits = Math.round(safeQty * item.subUnitsPerUnit);
