@@ -189,7 +189,7 @@ export const AdminView: React.FC<AdminViewProps> = ({
   const [inlineNewCategoryMode, setInlineNewCategoryMode] = useState(false);
   const [inlineCategoryName, setInlineCategoryName] = useState('');
 
-  // State für Artikel anlegen / bearbeiten
+  // State für Artikel anlegen / bearbeiten (merkt sich zuletzt gewählte Einheit, Kiste, MHD & Kategorie)
   const [editingItem, setEditingItem] = useState<InventoryItem | null>(null);
   const [adminItemFilter, setAdminItemFilter] = useState<'all' | 'expired' | 'warning'>('all');
   const [adminItemSearch, setAdminItemSearch] = useState('');
@@ -208,21 +208,50 @@ export const AdminView: React.FC<AdminViewProps> = ({
     parentItemId: string;
     expiryDate: string;
     aliases: string;
-  }>({
-    name: '',
-    category: activeCategories[0]?.id || 'drinks_food',
-    unit: 'Kiste',
-    subUnit: 'Flasche',
-    subUnitsPerUnit: '20',
-    allowFractions: true,
-    isReturnable: false,
-    quantity: '0',
-    minStock: '2',
-    targetStock: '5',
-    location: '',
-    parentItemId: '',
-    expiryDate: '',
-    aliases: '',
+  }>(() => {
+    const fallback = {
+      name: '',
+      category: activeCategories[0]?.id || 'drinks_food',
+      unit: 'Kiste',
+      subUnit: 'Flasche',
+      subUnitsPerUnit: '20',
+      allowFractions: true,
+      isReturnable: false,
+      quantity: '0',
+      minStock: '2',
+      targetStock: '5',
+      location: '',
+      parentItemId: '',
+      expiryDate: '',
+      aliases: '',
+    };
+    try {
+      const savedDefaults = localStorage.getItem('vk_last_item_form_defaults_v1');
+      if (savedDefaults) {
+        const parsed = JSON.parse(savedDefaults);
+        return {
+          ...fallback,
+          category: parsed.category || fallback.category,
+          unit: parsed.unit ?? fallback.unit,
+          subUnit: parsed.subUnit ?? '',
+          subUnitsPerUnit: parsed.subUnitsPerUnit ?? '',
+          allowFractions:
+            typeof parsed.allowFractions === 'boolean'
+              ? parsed.allowFractions
+              : fallback.allowFractions,
+          isReturnable:
+            typeof parsed.isReturnable === 'boolean'
+              ? parsed.isReturnable
+              : fallback.isReturnable,
+          location: parsed.location ?? '',
+          parentItemId: parsed.parentItemId ?? '',
+          expiryDate: parsed.expiryDate ?? '',
+        };
+      }
+    } catch {
+      // Fallback nutzen
+    }
+    return fallback;
   });
 
   // State für Einstellungen
@@ -869,25 +898,56 @@ export const AdminView: React.FC<AdminViewProps> = ({
     setAdminSubTab('items');
   }
 
-  function resetItemForm() {
+  function resetItemForm(preservedOverrides?: {
+    category?: CategoryId;
+    unit?: string;
+    subUnit?: string;
+    subUnitsPerUnit?: string;
+    allowFractions?: boolean;
+    isReturnable?: boolean;
+    location?: string;
+    parentItemId?: string;
+    expiryDate?: string;
+  }) {
     setEditingItem(null);
     setInlineNewCategoryMode(false);
     setInlineCategoryName('');
-    setItemForm({
-      name: '',
-      category: activeCategories[0]?.id || 'drinks_food',
-      unit: 'Kiste',
-      subUnit: '',
-      subUnitsPerUnit: '',
-      allowFractions: true,
-      isReturnable: false,
-      quantity: '0',
-      minStock: '1',
-      targetStock: '4',
-      location: '',
-      parentItemId: '',
-      expiryDate: '',
-      aliases: '',
+    setItemForm((prev) => {
+      const nextState = {
+        name: '',
+        category: preservedOverrides?.category ?? prev.category ?? (activeCategories[0]?.id || 'drinks_food'),
+        unit: preservedOverrides?.unit ?? prev.unit ?? 'Stück',
+        subUnit: preservedOverrides?.subUnit ?? prev.subUnit ?? '',
+        subUnitsPerUnit: preservedOverrides?.subUnitsPerUnit ?? prev.subUnitsPerUnit ?? '',
+        allowFractions: preservedOverrides?.allowFractions ?? prev.allowFractions,
+        isReturnable: preservedOverrides?.isReturnable ?? prev.isReturnable,
+        quantity: '0',
+        minStock: prev.minStock || '1',
+        targetStock: prev.targetStock || '4',
+        location: preservedOverrides?.location ?? prev.location ?? '',
+        parentItemId: preservedOverrides?.parentItemId ?? prev.parentItemId ?? '',
+        expiryDate: preservedOverrides?.expiryDate ?? prev.expiryDate ?? '',
+        aliases: '',
+      };
+      try {
+        localStorage.setItem(
+          'vk_last_item_form_defaults_v1',
+          JSON.stringify({
+            category: nextState.category,
+            unit: nextState.unit,
+            subUnit: nextState.subUnit,
+            subUnitsPerUnit: nextState.subUnitsPerUnit,
+            allowFractions: nextState.allowFractions,
+            isReturnable: nextState.isReturnable,
+            location: nextState.location,
+            parentItemId: nextState.parentItemId,
+            expiryDate: nextState.expiryDate,
+          })
+        );
+      } catch {
+        // Ignorieren
+      }
+      return nextState;
     });
   }
 
@@ -975,7 +1035,17 @@ export const AdminView: React.FC<AdminViewProps> = ({
         ? `Artikel „${newItem.name}“ wurde aktualisiert.`
         : `Neuer Artikel „${newItem.name}“ wurde angelegt.`
     );
-    resetItemForm();
+    resetItemForm({
+      category: chosenCategoryId,
+      unit: newItem.unit,
+      subUnit: newItem.subUnit || '',
+      subUnitsPerUnit: newItem.subUnitsPerUnit ? String(newItem.subUnitsPerUnit) : '',
+      allowFractions: newItem.allowFractions,
+      isReturnable: newItem.isReturnable,
+      location: newItem.location || '',
+      parentItemId: newItem.parentItemId || '',
+      expiryDate: newItem.expiryDate || '',
+    });
   }
 
   function handleCsvFileUpload(e: React.ChangeEvent<HTMLInputElement>) {
@@ -1701,7 +1771,7 @@ export const AdminView: React.FC<AdminViewProps> = ({
                 {editingItem && (
                   <button
                     type="button"
-                    onClick={resetItemForm}
+                    onClick={() => resetItemForm()}
                     className="text-xs text-slate-400 hover:text-white underline cursor-pointer"
                   >
                     Abbrechen / Neu
