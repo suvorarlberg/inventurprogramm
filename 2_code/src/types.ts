@@ -34,6 +34,8 @@ export interface InventoryItem {
   targetStock?: number;
   /** Lagerort im Vereinskeller (z. B. "Getränkekeller Regal A", "Werkzeugschrank") */
   location?: string;
+  /** Optionales Ablaufdatum / Mindesthaltbarkeitsdatum (MHD) im Format YYYY-MM-DD */
+  expiryDate?: string;
   /** Suchbegriffe / Synonyme für die automatische Textblock-Erkennung */
   aliases: string[];
   updatedAt: string;
@@ -79,6 +81,8 @@ export interface CartEntry {
   amount: number;
   /** Gewählte Einheit: Entweder item.unit oder item.subUnit */
   unit: string;
+  /** Optionales Ablaufdatum bei Befüllung/Einkauf */
+  expiryDate?: string;
 }
 
 export interface ParsedTextItem {

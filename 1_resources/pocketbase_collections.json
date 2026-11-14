@@ -1,0 +1,83 @@
+[
+  {
+    "name": "keller_items",
+    "type": "base",
+    "listRule": "",
+    "viewRule": "",
+    "createRule": "",
+    "updateRule": "",
+    "deleteRule": "",
+    "fields": [
+      {
+        "name": "id",
+        "type": "text",
+        "required": true,
+        "primaryKey": true,
+        "autogeneratePattern": "[a-z0-9]{15}",
+        "system": true
+      },
+      {
+        "name": "name",
+        "type": "text",
+        "required": false
+      },
+      {
+        "name": "category",
+        "type": "text",
+        "required": false
+      },
+      {
+        "name": "quantity",
+        "type": "number",
+        "required": false,
+        "noDecimal": false
+      },
+      {
+        "name": "updated_at",
+        "type": "text",
+        "required": false
+      },
+      {
+        "name": "payload",
+        "type": "json",
+        "required": false,
+        "maxSize": 2000000
+      }
+    ]
+  },
+  {
+    "name": "keller_transactions",
+    "type": "base",
+    "listRule": "",
+    "viewRule": "",
+    "createRule": "",
+    "updateRule": "",
+    "deleteRule": "",
+    "fields": [
+      {
+        "name": "id",
+        "type": "text",
+        "required": true,
+        "primaryKey": true,
+        "autogeneratePattern": "[a-z0-9]{15}",
+        "system": true
+      },
+      {
+        "name": "timestamp",
+        "type": "text",
+        "required": false
+      },
+      {
+        "name": "type",
+        "type": "text",
+        "required": false
+      },
+      {
+        "name": "payload",
+        "type": "json",
+        "required": false,
+        "maxSize": 2000000
+      }
+    ]
+  }
+]

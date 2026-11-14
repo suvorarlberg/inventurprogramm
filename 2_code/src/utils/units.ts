@@ -97,3 +97,117 @@ export function toPrimaryUnitQuantity(
 export function formatEnteredAmount(amount: number, unit: string): string {
   return `${formatGermanNumber(amount)} ${pluralizeUnit(unit, amount)}`;
 }
+
+/**
+ * Parst ein Datumsformat (YYYY-MM-DD, DD.MM.YYYY, DD/MM/YYYY) ohne Zeitzonenversatz.
+ */
+export function parseDateOnly(dateStr?: string | null): Date | null {
+  if (!dateStr || typeof dateStr !== 'string') return null;
+  const trimmed = dateStr.trim();
+  if (!trimmed) return null;
+
+  // Match YYYY-MM-DD oder YYYY/MM/DD
+  const isoMatch = trimmed.match(/^(\d{4})[-/](\d{1,2})[-/](\d{1,2})/);
+  if (isoMatch) {
+    const year = parseInt(isoMatch[1], 10);
+    const month = parseInt(isoMatch[2], 10) - 1;
+    const day = parseInt(isoMatch[3], 10);
+    const d = new Date(year, month, day);
+    if (!isNaN(d.getTime())) return d;
+  }
+
+  // Match DD.MM.YYYY oder DD.MM.YY (auch mit Leerzeichen wie 31. 12. 2026)
+  const deMatch = trimmed.match(/^(\d{1,2})\.\s*(\d{1,2})\.\s*(\d{2,4})/);
+  if (deMatch) {
+    const day = parseInt(deMatch[1], 10);
+    const month = parseInt(deMatch[2], 10) - 1;
+    let year = parseInt(deMatch[3], 10);
+    if (year < 100) {
+      year += 2000;
+    }
+    const d = new Date(year, month, day);
+    if (!isNaN(d.getTime())) return d;
+  }
+
+  // Match DD/MM/YYYY
+  const slashMatch = trimmed.match(/^(\d{1,2})\/(\d{1,2})\/(\d{4})/);
+  if (slashMatch) {
+    const day = parseInt(slashMatch[1], 10);
+    const month = parseInt(slashMatch[2], 10) - 1;
+    const year = parseInt(slashMatch[3], 10);
+    const d = new Date(year, month, day);
+    if (!isNaN(d.getTime())) return d;
+  }
+
+  const parsed = new Date(trimmed);
+  if (!isNaN(parsed.getTime())) {
+    return new Date(parsed.getFullYear(), parsed.getMonth(), parsed.getDate());
+  }
+
+  return null;
+}
+
+/**
+ * Normalisiert ein Ablaufdatum in das Standard-ISO-Format YYYY-MM-DD
+ */
+export function normalizeExpiryDate(val?: string | null): string | undefined {
+  const d = parseDateOnly(val);
+  if (!d) return undefined;
+  const year = d.getFullYear();
+  const month = String(d.getMonth() + 1).padStart(2, '0');
+  const day = String(d.getDate()).padStart(2, '0');
+  return `${year}-${month}-${day}`;
+}
+
+export type ExpiryStatus = 'expired' | 'warning' | 'ok' | null;
+
+/**
+ * Berechnet den Status eines Ablaufdatums:
+ * - 'expired': Datum liegt in der Vergangenheit
+ * - 'warning': Datum liegt innerhalb der nächsten `thresholdDays` Tage (Standard: 30)
+ * - 'ok': Noch mehr als `thresholdDays` Tage haltbar
+ * - null: Kein gültiges Ablaufdatum hinterlegt
+ */
+export function getExpiryStatus(
+  expiryDate?: string | null,
+  thresholdDays: number = 30,
+  referenceDate: Date = new Date()
+): ExpiryStatus {
+  const target = parseDateOnly(expiryDate);
+  if (!target) return null;
+
+  const today = new Date(referenceDate.getTime());
+  today.setHours(0, 0, 0, 0);
+
+  const diffDays = Math.round((target.getTime() - today.getTime()) / (1000 * 60 * 60 * 24));
+  if (diffDays < 0) return 'expired';
+  if (diffDays <= thresholdDays) return 'warning';
+  return 'ok';
+}
+
+/**
+ * Gibt die Anzahl der verbleibenden Tage bis zum Ablaufdatum zurück (negativ = bereits abgelaufen).
+ */
+export function getDaysUntilExpiry(
+  expiryDate?: string | null,
+  referenceDate: Date = new Date()
+): number | null {
+  const target = parseDateOnly(expiryDate);
+  if (!target) return null;
+  const today = new Date(referenceDate.getTime());
+  today.setHours(0, 0, 0, 0);
+  return Math.round((target.getTime() - today.getTime()) / (1000 * 60 * 60 * 24));
+}
+
+/**
+ * Formatiert das Ablaufdatum im deutschen Standard-Format DD.MM.YYYY
+ */
+export function formatExpiryDate(expiryDate?: string | null): string {
+  const d = parseDateOnly(expiryDate);
+  if (!d) return expiryDate || '';
+  const day = String(d.getDate()).padStart(2, '0');
+  const month = String(d.getMonth() + 1).padStart(2, '0');
+  const year = d.getFullYear();
+  return `${day}.${month}.${year}`;
+}
+

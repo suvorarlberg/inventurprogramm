@@ -544,6 +544,8 @@ export const App: React.FC = () => {
       return {
         ...item,
         quantity: newStock,
+        expiryDate:
+          params.mode === 'restock' && entry.expiryDate ? entry.expiryDate : item.expiryDate,
         updatedAt: now,
       };
     });
@@ -660,15 +662,24 @@ export const App: React.FC = () => {
   // Erstinventur / Zählung speichern
   function handleSaveInitialInventory(
     updatedQuantities: Record<string, number>,
-    note?: string
+    note?: string,
+    updatedExpiries?: Record<string, string | undefined>
   ) {
     const now = new Date().toISOString();
     const changedLines: TransactionLineItem[] = [];
 
     const nextItems = items.map((item) => {
       const counted = updatedQuantities[item.id];
-      if (counted === undefined) return item;
-      const diff = roundStock(counted - item.quantity);
+      const expiryCandidate = updatedExpiries ? updatedExpiries[item.id] : undefined;
+      const expiryChanged =
+        updatedExpiries &&
+        expiryCandidate !== undefined &&
+        (expiryCandidate || undefined) !== item.expiryDate;
+
+      if (counted === undefined && !expiryChanged) return item;
+
+      const finalQty = counted !== undefined ? counted : item.quantity;
+      const diff = roundStock(finalQty - item.quantity);
       if (Math.abs(diff) > 0.0001) {
         changedLines.push({
           itemId: item.id,
@@ -677,13 +688,19 @@ export const App: React.FC = () => {
           enteredAmount: Math.abs(diff),
           enteredUnit: item.unit,
           previousStock: item.quantity,
-          newStock: counted,
+          newStock: finalQty,
         });
       }
       return {
         ...item,
-        quantity: counted,
-        updatedAt: now,
+        quantity: finalQty,
+        expiryDate:
+          updatedExpiries && expiryCandidate !== undefined
+            ? expiryCandidate
+              ? expiryCandidate
+              : undefined
+            : item.expiryDate,
+        updatedAt: Math.abs(diff) > 0.0001 || expiryChanged ? now : item.updatedAt,
       };
     });
 
@@ -742,6 +759,23 @@ export const App: React.FC = () => {
     const nextItems = exists
       ? items.map((i) => (i.id === item.id ? item : i))
       : [...items, item];
+    setItems(nextItems);
+    if (hasCloudConfig && navigator.onLine) {
+      pushToPocketBase(settings, nextItems, transactions).catch(() => {});
+    }
+  }
+
+  function handleUpdateItemExpiry(itemId: string, expiryDate?: string) {
+    const now = new Date().toISOString();
+    const nextItems = items.map((i) =>
+      i.id === itemId
+        ? {
+            ...i,
+            expiryDate: expiryDate ? expiryDate : undefined,
+            updatedAt: now,
+          }
+        : i
+    );
     setItems(nextItems);
     if (hasCloudConfig && navigator.onLine) {
       pushToPocketBase(settings, nextItems, transactions).catch(() => {});
@@ -861,6 +895,7 @@ export const App: React.FC = () => {
             selectedReturnTxId={selectedReturnTxId}
             onClearSelectedReturnTx={() => setSelectedReturnTxId(null)}
             onExecuteBooking={handleExecuteBooking}
+            onUpdateItemExpiry={handleUpdateItemExpiry}
           />
         )}
 

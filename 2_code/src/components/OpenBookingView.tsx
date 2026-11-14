@@ -13,6 +13,8 @@ import {
   MapPin,
   RotateCcw,
   AlertCircle,
+  AlertTriangle,
+  Clock,
   User,
   Calendar,
   Trash2,
@@ -31,8 +33,11 @@ import {
 import { CATEGORIES, DEFAULT_ALLOWED_MEMBERS } from '../data/defaultData';
 import {
   formatEnteredAmount,
+  formatExpiryDate,
   formatGermanNumber,
   formatStockDisplay,
+  getDaysUntilExpiry,
+  getExpiryStatus,
   pluralizeUnit,
   roundStock,
   toPrimaryUnitQuantity,
@@ -54,6 +59,7 @@ interface OpenBookingViewProps {
     note?: string;
     relatedTransactionId?: string;
   }) => void;
+  onUpdateItemExpiry?: (itemId: string, expiryDate?: string) => void;
 }
 
 export const OpenBookingView: React.FC<OpenBookingViewProps> = ({
@@ -64,11 +70,14 @@ export const OpenBookingView: React.FC<OpenBookingViewProps> = ({
   selectedReturnTxId,
   onClearSelectedReturnTx,
   onExecuteBooking,
+  onUpdateItemExpiry,
 }) => {
   const [mode, setMode] = useState<BookingMode>('withdraw');
   const [inputMethod, setInputMethod] = useState<'list' | 'text'>('list');
   const [selectedCategory, setSelectedCategory] = useState<CategoryId | 'all'>('all');
   const [searchQuery, setSearchQuery] = useState('');
+  const [mhdEditingItem, setMhdEditingItem] = useState<InventoryItem | null>(null);
+  const [mhdDateDraft, setMhdDateDraft] = useState<string>('');
 
   // Warenkorb: itemId -> { itemId, amount, unit }
   const [cart, setCart] = useState<Record<string, CartEntry>>({});
@@ -467,7 +476,14 @@ export const OpenBookingView: React.FC<OpenBookingViewProps> = ({
         const matchName = item.name.toLowerCase().includes(q);
         const matchLoc = (item.location || '').toLowerCase().includes(q);
         const matchAlias = item.aliases.some((a) => a.toLowerCase().includes(q));
-        return matchName || matchLoc || matchAlias;
+        const matchExpiry = item.expiryDate
+          ? item.expiryDate.includes(q) ||
+            formatExpiryDate(item.expiryDate).includes(q) ||
+            (q === 'mhd' || q === 'abgelaufen'
+              ? getExpiryStatus(item.expiryDate) === 'expired' || getExpiryStatus(item.expiryDate) === 'warning'
+              : false)
+          : false;
+        return matchName || matchLoc || matchAlias || matchExpiry;
       }
       return true;
     });
@@ -1284,6 +1300,66 @@ export const OpenBookingView: React.FC<OpenBookingViewProps> = ({
                             Knapp
                           </span>
                         )}
+                        {item.expiryDate ? (
+                          <button
+                            type="button"
+                            onClick={(e) => {
+                              e.stopPropagation();
+                              setMhdEditingItem(item);
+                              setMhdDateDraft(item.expiryDate || '');
+                            }}
+                            className="cursor-pointer group"
+                            title="Ablaufdatum / MHD ansehen oder ändern (Klicken zum Bearbeiten)"
+                          >
+                            {(() => {
+                              const status = getExpiryStatus(item.expiryDate);
+                              const formatted = formatExpiryDate(item.expiryDate);
+                              const days = getDaysUntilExpiry(item.expiryDate);
+                              if (status === 'expired') {
+                                return (
+                                  <span
+                                    className="flex items-center gap-1 text-[10px] font-semibold px-2 py-0.5 rounded-full bg-rose-500/20 text-rose-300 border border-rose-500/40 group-hover:bg-rose-500/30 transition"
+                                  >
+                                    <AlertTriangle className="w-3 h-3 text-rose-400 shrink-0" />
+                                    <span>MHD abgelaufen ({formatted})</span>
+                                  </span>
+                                );
+                              }
+                              if (status === 'warning') {
+                                return (
+                                  <span
+                                    className="flex items-center gap-1 text-[10px] font-semibold px-2 py-0.5 rounded-full bg-amber-500/20 text-amber-300 border border-amber-500/40 group-hover:bg-amber-500/30 transition"
+                                  >
+                                    <Clock className="w-3 h-3 text-amber-400 shrink-0" />
+                                    <span>MHD {days === 0 ? 'heute' : days === 1 ? 'morgen' : `in ${days} T.`} ({formatted})</span>
+                                  </span>
+                                );
+                              }
+                              return (
+                                <span
+                                  className="flex items-center gap-1 text-[10px] font-medium px-2 py-0.5 rounded-full bg-slate-800 text-slate-300 border border-slate-700 group-hover:border-sky-500/50 group-hover:text-white transition"
+                                >
+                                  <Calendar className="w-3 h-3 text-sky-400 shrink-0" />
+                                  <span>MHD: {formatted}</span>
+                                </span>
+                              );
+                            })()}
+                          </button>
+                        ) : (
+                          <button
+                            type="button"
+                            onClick={(e) => {
+                              e.stopPropagation();
+                              setMhdEditingItem(item);
+                              setMhdDateDraft('');
+                            }}
+                            className="inline-flex items-center gap-1 text-[10px] font-medium px-2 py-0.5 rounded-full bg-slate-800/80 hover:bg-slate-700 text-slate-400 hover:text-sky-300 border border-slate-700/60 transition cursor-pointer"
+                            title="Ablaufdatum / MHD für diesen Artikel eintragen"
+                          >
+                            <Calendar className="w-3 h-3 text-sky-400 shrink-0" />
+                            <span>+ MHD</span>
+                          </button>
+                        )}
                       </div>
 
                       {item.location && (
@@ -1577,6 +1653,69 @@ export const OpenBookingView: React.FC<OpenBookingViewProps> = ({
                   'Bitte gib deinen Namen ein – bei der Entnahme aus dem Keller ist die Namensangabe verpflichtend.'}
               </p>
             )}
+          </div>
+        </div>
+      )}
+      {/* MHD Bearbeitungs-Modal */}
+      {mhdEditingItem && (
+        <div className="fixed inset-0 z-50 bg-slate-950/80 backdrop-blur-sm flex items-center justify-center p-4 no-print">
+          <div className="bg-slate-900 border border-slate-700 rounded-2xl p-5 max-w-sm w-full space-y-4 shadow-2xl">
+            <div className="flex items-center justify-between">
+              <h3 className="font-bold text-white text-base flex items-center gap-2">
+                <Calendar className="w-5 h-5 text-sky-400" />
+                <span>Ablaufdatum / MHD</span>
+              </h3>
+              <button
+                type="button"
+                onClick={() => setMhdEditingItem(null)}
+                className="text-slate-400 hover:text-white p-1 rounded-lg cursor-pointer"
+              >
+                ✕
+              </button>
+            </div>
+            <div>
+              <div className="text-xs text-slate-400">Artikel:</div>
+              <div className="font-semibold text-white text-sm">{mhdEditingItem.name}</div>
+            </div>
+            <div>
+              <label className="block text-xs text-slate-300 mb-1">
+                Ablaufdatum (Mindesthaltbarkeitsdatum):
+              </label>
+              <input
+                type="date"
+                value={mhdDateDraft}
+                onChange={(e) => setMhdDateDraft(e.target.value)}
+                className="w-full px-3 py-2 rounded-xl bg-slate-950 border border-slate-700 text-sm text-white [color-scheme:dark] focus:outline-none focus:border-sky-500"
+              />
+            </div>
+            <div className="flex items-center gap-2 pt-2">
+              {mhdEditingItem.expiryDate && (
+                <button
+                  type="button"
+                  onClick={() => {
+                    if (onUpdateItemExpiry) {
+                      onUpdateItemExpiry(mhdEditingItem.id, undefined);
+                    }
+                    setMhdEditingItem(null);
+                  }}
+                  className="flex-1 py-2 px-3 rounded-xl bg-rose-500/20 hover:bg-rose-500/30 text-rose-300 text-xs font-semibold border border-rose-500/40 cursor-pointer"
+                >
+                  MHD entfernen
+                </button>
+              )}
+              <button
+                type="button"
+                onClick={() => {
+                  if (onUpdateItemExpiry) {
+                    onUpdateItemExpiry(mhdEditingItem.id, mhdDateDraft.trim() || undefined);
+                  }
+                  setMhdEditingItem(null);
+                }}
+                className="flex-1 py-2 px-3 rounded-xl bg-sky-500 hover:bg-sky-400 text-slate-950 text-xs font-bold shadow-lg shadow-sky-500/20 cursor-pointer"
+              >
+                Speichern
+              </button>
+            </div>
           </div>
         </div>
       )}

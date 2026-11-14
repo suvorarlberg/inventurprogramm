@@ -7,7 +7,15 @@ import {
   normalizeUsernameForComparison,
 } from '../data/defaultData';
 import { InventoryItem } from '../types';
-import { formatStockDisplay, toPrimaryUnitQuantity } from '../utils/units';
+import {
+  formatExpiryDate,
+  formatStockDisplay,
+  getDaysUntilExpiry,
+  getExpiryStatus,
+  normalizeExpiryDate,
+  parseDateOnly,
+  toPrimaryUnitQuantity,
+} from '../utils/units';
 import { parseFreeTextBlock } from '../utils/textParser';
 import { exportInventoryToCsv, parseInventoryCsv } from '../utils/csvHelper';
 import {
@@ -269,5 +277,68 @@ describe('PocketBase-Konfiguration & 15-Zeichen Record-ID Konvertierung', () => 
     expect(txPbId).not.toBe(itemPbId);
   });
 });
+
+describe('Optionales Ablaufdatum (MHD) & Datumsfunktionen', () => {
+  it('parst Datumsangaben im ISO-, deutschen und Schrägstrich-Format zuverlässig', () => {
+    expect(normalizeExpiryDate('2026-12-31')).toBe('2026-12-31');
+    expect(normalizeExpiryDate('31.12.2026')).toBe('2026-12-31');
+    expect(normalizeExpiryDate('31. 12. 2026')).toBe('2026-12-31');
+    expect(normalizeExpiryDate('31/12/2026')).toBe('2026-12-31');
+    expect(normalizeExpiryDate('')).toBeUndefined();
+    expect(normalizeExpiryDate(undefined)).toBeUndefined();
+    expect(normalizeExpiryDate('ungueltig')).toBeUndefined();
+  });
+
+  it('formatiert Ablaufdaten ins lesbare deutsche Format DD.MM.YYYY', () => {
+    expect(formatExpiryDate('2026-12-31')).toBe('31.12.2026');
+    expect(formatExpiryDate('2027-01-05')).toBe('05.01.2027');
+    expect(formatExpiryDate('')).toBe('');
+  });
+
+  it('ermittelt den Ablauf-Status korrekt (abgelaufen, bald fällig, haltbar)', () => {
+    // Referenzdatum: 2026-11-14
+    const refDate = new Date(2026, 10, 14);
+
+    // Abgelaufen (gestern)
+    expect(getExpiryStatus('2026-11-13', 30, refDate)).toBe('expired');
+    expect(getDaysUntilExpiry('2026-11-13', refDate)).toBe(-1);
+
+    // Heute fällig (0 Tage) -> Warnung
+    expect(getExpiryStatus('2026-11-14', 30, refDate)).toBe('warning');
+    expect(getDaysUntilExpiry('2026-11-14', refDate)).toBe(0);
+
+    // In 10 Tagen fällig -> Warnung
+    expect(getExpiryStatus('2026-11-24', 30, refDate)).toBe('warning');
+    expect(getDaysUntilExpiry('2026-11-24', refDate)).toBe(10);
+
+    // In 45 Tagen fällig -> ok
+    expect(getExpiryStatus('2026-12-29', 30, refDate)).toBe('ok');
+    expect(getDaysUntilExpiry('2026-12-29', refDate)).toBe(45);
+
+    // Kein Datum
+    expect(getExpiryStatus(undefined, 30, refDate)).toBeNull();
+  });
+
+  it('exportiert und importiert das Ablaufdatum per CSV', () => {
+    const itemWithExpiry: InventoryItem = {
+      ...TEST_ITEMS[0],
+      expiryDate: '2026-12-31',
+    };
+
+    const csv = exportInventoryToCsv([itemWithExpiry]);
+    expect(csv).toContain('Ablaufdatum');
+    expect(csv).toContain('2026-12-31');
+
+    // Import mit deutschem Datumsformat
+    const importCsv = [
+      'Name;Kategorie;Bestand (Haupteinheit);Haupteinheit;Untereinheit;Faktor Untereinheit;Mindestbestand;Sollbestand;Lagerort;Ablaufdatum;Leihgerät (Rückgabepflicht);Teilmengen erlaubt;Suchbegriffe / Synonyme',
+      'Pilsener Bier (0,5l);Getränke & Lebensmittel;6;Kiste;Flasche;20;3;8;Getränkekeller Regal A;31.12.2026;Nein;Ja;bier, pils',
+    ].join('\r\n');
+
+    const result = parseInventoryCsv(importCsv, [itemWithExpiry]);
+    expect(result.items[0].expiryDate).toBe('2026-12-31');
+  });
+});
+
 
 

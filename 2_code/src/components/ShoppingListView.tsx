@@ -6,11 +6,17 @@ import {
   PackagePlus,
   AlertTriangle,
   CheckCircle2,
+  Calendar,
+  Clock,
 } from 'lucide-react';
 import { BookingMode, CartEntry, InventoryItem } from '../types';
 import {
+  formatEnteredAmount,
+  formatExpiryDate,
   formatGermanNumber,
   formatStockDisplay,
+  getDaysUntilExpiry,
+  getExpiryStatus,
   pluralizeUnit,
   roundStock,
 } from '../utils/units';
@@ -185,7 +191,7 @@ export const ShoppingListView: React.FC<ShoppingListViewProps> = ({
                 }`}
               >
                 <div className="space-y-1">
-                  <div className="flex items-center gap-2">
+                  <div className="flex flex-wrap items-center gap-2">
                     <span className="font-bold text-white text-sm sm:text-base">{item.name}</span>
                     {isCritical && (
                       <span className="inline-flex items-center gap-1 text-[10px] font-semibold px-2 py-0.5 rounded-full bg-amber-500/20 text-amber-300 border border-amber-500/40">
@@ -193,6 +199,33 @@ export const ShoppingListView: React.FC<ShoppingListViewProps> = ({
                         Unter Mindestbestand ({formatGermanNumber(item.minStock)} {item.unit})
                       </span>
                     )}
+                    {item.expiryDate && (() => {
+                      const status = getExpiryStatus(item.expiryDate);
+                      const formatted = formatExpiryDate(item.expiryDate);
+                      const days = getDaysUntilExpiry(item.expiryDate);
+                      if (status === 'expired') {
+                        return (
+                          <span className="inline-flex items-center gap-1 text-[10px] font-semibold px-2 py-0.5 rounded-full bg-rose-500/20 text-rose-300 border border-rose-500/40">
+                            <AlertTriangle className="w-3 h-3 text-rose-400" />
+                            MHD abgelaufen ({formatted})
+                          </span>
+                        );
+                      }
+                      if (status === 'warning') {
+                        return (
+                          <span className="inline-flex items-center gap-1 text-[10px] font-semibold px-2 py-0.5 rounded-full bg-amber-500/20 text-amber-300 border border-amber-500/40">
+                            <Clock className="w-3 h-3 text-amber-400" />
+                            MHD {days === 0 ? 'heute' : days === 1 ? 'morgen' : `in ${days} T.`} ({formatted})
+                          </span>
+                        );
+                      }
+                      return (
+                        <span className="inline-flex items-center gap-1 text-[10px] text-slate-300 px-2 py-0.5 rounded-full bg-slate-900 border border-slate-700">
+                          <Calendar className="w-3 h-3 text-slate-400" />
+                          MHD: {formatted}
+                        </span>
+                      );
+                    })()}
                   </div>
                   <p className="text-xs text-slate-400">
                     Aktuell im Keller: <strong className="text-rose-300">{display.primaryText}</strong>

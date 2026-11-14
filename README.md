@@ -1,6 +1,6 @@
 # Vereinskeller – Inventur & Bestands-App (PWA)
 
-Niederschwelliges Inventur- und Bestandsprogramm für den Vereinskeller – optimiert für Smartphones (iOS & Android als installierbare Web-App) und PC, inklusive Offline-Modus für Keller ohne Empfang und kostenloser Multi-Geräte-Synchronisation über Supabase.
+Niederschwelliges Inventur- und Bestandsprogramm für den Vereinskeller – optimiert für Smartphones (iOS & Android als installierbare Web-App) und PC, inklusive Offline-Modus für Keller ohne Empfang und Multi-Geräte-Synchronisation über PocketBase (`https://api.keller.schuelerunion-vorarlberg.at`).
 
 ## Hauptfunktionen
 
@@ -15,7 +15,7 @@ Niederschwelliges Inventur- und Bestandsprogramm für den Vereinskeller – opti
   - **Erstinventur-Schnellzählung** aller Artikel auf einer Seite.
   - **Eigene Kategorien & Artikel verwalten** (Anlegen, Bearbeiten, Löschen).
   - **CSV / Excel Import & Export** inkl. Mustervorlage (`1_resources/Vereinskeller_Erstinventur_Vorlage.csv`).
-  - **Multi-Geräte Cloud-Sync (Supabase)** & druckbarer **Kellertür-QR-Code**, über den sich die Handys aller Vereinsmitglieder mit 1 Scan automatisch mit der Vereins-Datenbank verbinden.
+  - **Multi-Geräte Cloud-Sync (PocketBase)** & druckbarer **Kellertür-QR-Code**, über den sich die Handys aller Vereinsmitglieder mit 1 Scan automatisch mit der Vereins-Datenbank verbinden.
 
 ---
 

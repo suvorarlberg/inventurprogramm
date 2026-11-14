@@ -29,6 +29,8 @@ import {
   Smartphone,
   FileText,
   AlertTriangle,
+  Calendar,
+  Clock,
   ChevronDown,
   ChevronUp,
   ArrowLeft,
@@ -53,8 +55,12 @@ import {
   reconcileMemberAccounts,
 } from '../data/defaultData';
 import {
+  formatExpiryDate,
   formatGermanNumber,
   formatStockDisplay,
+  getDaysUntilExpiry,
+  getExpiryStatus,
+  normalizeExpiryDate,
   roundStock,
 } from '../utils/units';
 import {
@@ -88,7 +94,11 @@ interface AdminViewProps {
   onLock: () => void;
   initial2FAVerified?: boolean;
   onClearInitial2FAVerified?: () => void;
-  onSaveInitialInventory: (updatedQuantities: Record<string, number>, note?: string) => void;
+  onSaveInitialInventory: (
+    updatedQuantities: Record<string, number>,
+    note?: string,
+    updatedExpiries?: Record<string, string | undefined>
+  ) => void;
   onUpsertItem: (item: InventoryItem) => void;
   onDeleteItem: (itemId: string) => void;
   onBulkImportItems: (
@@ -139,10 +149,10 @@ export const AdminView: React.FC<AdminViewProps> = ({
   const [memberPasswordDrafts, setMemberPasswordDrafts] = useState<Record<string, string>>({});
   const [copiedCredentials, setCopiedCredentials] = useState(false);
 
-  // State für Erstinventur (itemId -> { main: string, sub: string })
-  const [counts, setCounts] = useState<Record<string, { main: string; sub: string }>>(() =>
-    buildInitialCountState(items)
-  );
+  // State für Erstinventur (itemId -> { main: string, sub: string, expiryDate: string })
+  const [counts, setCounts] = useState<
+    Record<string, { main: string; sub: string; expiryDate: string }>
+  >(() => buildInitialCountState(items));
   const [inventoryNote, setInventoryNote] = useState('Erstinventur / Bestandszählung');
 
   // State für Neue Kategorie anlegen
@@ -154,6 +164,8 @@ export const AdminView: React.FC<AdminViewProps> = ({
 
   // State für Artikel anlegen / bearbeiten
   const [editingItem, setEditingItem] = useState<InventoryItem | null>(null);
+  const [adminItemFilter, setAdminItemFilter] = useState<'all' | 'expired' | 'warning'>('all');
+  const [adminItemSearch, setAdminItemSearch] = useState('');
   const [itemForm, setItemForm] = useState<{
     name: string;
     category: CategoryId;
@@ -166,6 +178,7 @@ export const AdminView: React.FC<AdminViewProps> = ({
     minStock: string;
     targetStock: string;
     location: string;
+    expiryDate: string;
     aliases: string;
   }>({
     name: '',
@@ -179,6 +192,7 @@ export const AdminView: React.FC<AdminViewProps> = ({
     minStock: '2',
     targetStock: '5',
     location: '',
+    expiryDate: '',
     aliases: '',
   });
 
@@ -680,7 +694,7 @@ export const AdminView: React.FC<AdminViewProps> = ({
   }
 
   function buildInitialCountState(list: InventoryItem[]) {
-    const map: Record<string, { main: string; sub: string }> = {};
+    const map: Record<string, { main: string; sub: string; expiryDate: string }> = {};
     for (const item of list) {
       if (item.subUnit && item.subUnitsPerUnit && item.subUnitsPerUnit > 1) {
         const totalSub = Math.round(item.quantity * item.subUnitsPerUnit);
@@ -689,11 +703,13 @@ export const AdminView: React.FC<AdminViewProps> = ({
         map[item.id] = {
           main: String(fullMain),
           sub: String(remSub),
+          expiryDate: item.expiryDate || '',
         };
       } else {
         map[item.id] = {
           main: formatGermanNumber(item.quantity),
           sub: '0',
+          expiryDate: item.expiryDate || '',
         };
       }
     }
@@ -785,6 +801,7 @@ export const AdminView: React.FC<AdminViewProps> = ({
 
   function handleSaveInventoryCounts() {
     const updatedQuantities: Record<string, number> = {};
+    const updatedExpiries: Record<string, string | undefined> = {};
     for (const item of items) {
       const entry = counts[item.id];
       if (!entry) continue;
@@ -795,9 +812,10 @@ export const AdminView: React.FC<AdminViewProps> = ({
       } else {
         updatedQuantities[item.id] = roundStock(mainVal);
       }
+      updatedExpiries[item.id] = entry.expiryDate ? normalizeExpiryDate(entry.expiryDate) : undefined;
     }
-    onSaveInitialInventory(updatedQuantities, inventoryNote);
-    showBanner('Inventur erfolgreich abgeschlossen! Alle Bestände wurden aktualisiert.');
+    onSaveInitialInventory(updatedQuantities, inventoryNote, updatedExpiries);
+    showBanner('Inventur erfolgreich abgeschlossen! Alle Bestände & Ablaufdaten wurden aktualisiert.');
   }
 
   function startEditItem(item: InventoryItem) {
@@ -815,6 +833,7 @@ export const AdminView: React.FC<AdminViewProps> = ({
       minStock: formatGermanNumber(item.minStock),
       targetStock: item.targetStock !== undefined ? formatGermanNumber(item.targetStock) : '',
       location: item.location || '',
+      expiryDate: item.expiryDate || '',
       aliases: item.aliases.join(', '),
     });
     setAdminSubTab('items');
@@ -836,6 +855,7 @@ export const AdminView: React.FC<AdminViewProps> = ({
       minStock: '1',
       targetStock: '4',
       location: '',
+      expiryDate: '',
       aliases: '',
     });
   }
@@ -895,6 +915,9 @@ export const AdminView: React.FC<AdminViewProps> = ({
         ? roundStock(Math.max(0, parseFloat(itemForm.targetStock.replace(',', '.')) || 0))
         : undefined,
       location: itemForm.location.trim() || undefined,
+      expiryDate: itemForm.expiryDate.trim()
+        ? normalizeExpiryDate(itemForm.expiryDate.trim())
+        : undefined,
       aliases: itemForm.aliases
         .split(',')
         .map((a) => a.trim().toLowerCase())
@@ -912,6 +935,7 @@ export const AdminView: React.FC<AdminViewProps> = ({
       [newItem.id]: {
         main: formatGermanNumber(newItem.quantity),
         sub: '0',
+        expiryDate: newItem.expiryDate || '',
       },
     }));
     showBanner(
@@ -1324,13 +1348,42 @@ export const AdminView: React.FC<AdminViewProps> = ({
                                 <Edit3 className="w-3.5 h-3.5" />
                               </button>
                             </div>
-                            <p className="text-xs text-slate-400">
-                              Bisheriger Soll-Bestand:{' '}
-                              <strong className="text-slate-200">
-                                {formatStockDisplay(item).primaryText}
-                              </strong>
-                              {item.location ? ` • ${item.location}` : ''}
-                            </p>
+                            <div className="flex flex-wrap items-center gap-2 mt-0.5">
+                              <p className="text-xs text-slate-400">
+                                Bisheriger Soll-Bestand:{' '}
+                                <strong className="text-slate-200">
+                                  {formatStockDisplay(item).primaryText}
+                                </strong>
+                                {item.location ? ` • ${item.location}` : ''}
+                              </p>
+                              {item.expiryDate && (() => {
+                                const status = getExpiryStatus(item.expiryDate);
+                                const formatted = formatExpiryDate(item.expiryDate);
+                                const days = getDaysUntilExpiry(item.expiryDate);
+                                if (status === 'expired') {
+                                  return (
+                                    <span className="inline-flex items-center gap-1 text-[10px] font-semibold px-2 py-0.5 rounded-full bg-rose-500/20 text-rose-300 border border-rose-500/40">
+                                      <AlertTriangle className="w-3 h-3 text-rose-400 shrink-0" />
+                                      MHD abgelaufen ({formatted})
+                                    </span>
+                                  );
+                                }
+                                if (status === 'warning') {
+                                  return (
+                                    <span className="inline-flex items-center gap-1 text-[10px] font-semibold px-2 py-0.5 rounded-full bg-amber-500/20 text-amber-300 border border-amber-500/40">
+                                      <Clock className="w-3 h-3 text-amber-400 shrink-0" />
+                                      MHD {days === 0 ? 'heute' : days === 1 ? 'morgen' : `in ${days} T.`} ({formatted})
+                                    </span>
+                                  );
+                                }
+                                return (
+                                  <span className="inline-flex items-center gap-1 text-[10px] text-slate-300 px-2 py-0.5 rounded-full bg-slate-900 border border-slate-700">
+                                    <Calendar className="w-3 h-3 text-slate-400 shrink-0" />
+                                    MHD: {formatted}
+                                  </span>
+                                );
+                              })()}
+                            </div>
                           </div>
 
                           <div className="flex flex-wrap items-center gap-2 self-end sm:self-center">
@@ -1371,6 +1424,41 @@ export const AdminView: React.FC<AdminViewProps> = ({
                                 </span>
                               </div>
                             )}
+
+                            {/* MHD Eingabefeld direkt in der Erstinventur-Zeile */}
+                            <div
+                              className="flex items-center gap-1.5 bg-slate-900 border border-slate-700 rounded-xl px-2.5 py-1.5"
+                              title="Ablaufdatum / Mindesthaltbarkeitsdatum (optional)"
+                            >
+                              <Calendar className="w-3.5 h-3.5 text-sky-400 shrink-0" />
+                              <span className="text-xs font-semibold text-slate-300">MHD:</span>
+                              <input
+                                type="date"
+                                value={entry.expiryDate || ''}
+                                onChange={(e) =>
+                                  setCounts((prev) => ({
+                                    ...prev,
+                                    [item.id]: { ...entry, expiryDate: e.target.value },
+                                  }))
+                                }
+                                className="bg-transparent text-xs text-white focus:outline-none [color-scheme:dark] cursor-pointer"
+                              />
+                              {entry.expiryDate && (
+                                <button
+                                  type="button"
+                                  onClick={() =>
+                                    setCounts((prev) => ({
+                                      ...prev,
+                                      [item.id]: { ...entry, expiryDate: '' },
+                                    }))
+                                  }
+                                  className="text-xs text-slate-500 hover:text-rose-400 cursor-pointer ml-0.5"
+                                  title="MHD entfernen"
+                                >
+                                  ✕
+                                </button>
+                              )}
+                            </div>
                           </div>
                         </div>
                       );
@@ -1662,15 +1750,37 @@ export const AdminView: React.FC<AdminViewProps> = ({
                 </div>
               </div>
 
-              <div>
-                <label className="block text-xs text-slate-300 mb-1">Lagerort im Keller</label>
-                <input
-                  type="text"
-                  value={itemForm.location}
-                  onChange={(e) => setItemForm({ ...itemForm, location: e.target.value })}
-                  placeholder="z. B. Getränkekeller Regal A, Werkzeugschrank..."
-                  className="w-full px-3 py-2 rounded-xl bg-slate-950 border border-slate-700 text-sm text-white"
-                />
+              <div className="grid grid-cols-1 sm:grid-cols-2 gap-2.5">
+                <div>
+                  <label className="block text-xs text-slate-300 mb-1">Lagerort im Keller</label>
+                  <input
+                    type="text"
+                    value={itemForm.location}
+                    onChange={(e) => setItemForm({ ...itemForm, location: e.target.value })}
+                    placeholder="z. B. Getränkekeller Regal A, Werkzeugschrank..."
+                    className="w-full px-3 py-2 rounded-xl bg-slate-950 border border-slate-700 text-sm text-white"
+                  />
+                </div>
+                <div>
+                  <div className="flex items-center justify-between mb-1">
+                    <label className="text-xs text-slate-300">Ablaufdatum / MHD (optional)</label>
+                    {itemForm.expiryDate && (
+                      <button
+                        type="button"
+                        onClick={() => setItemForm({ ...itemForm, expiryDate: '' })}
+                        className="text-[11px] text-rose-400 hover:underline cursor-pointer"
+                      >
+                        Datum entfernen
+                      </button>
+                    )}
+                  </div>
+                  <input
+                    type="date"
+                    value={itemForm.expiryDate}
+                    onChange={(e) => setItemForm({ ...itemForm, expiryDate: e.target.value })}
+                    className="w-full px-3 py-2 rounded-xl bg-slate-950 border border-slate-700 text-sm text-white"
+                  />
+                </div>
               </div>
 
               <div>
@@ -1723,62 +1833,173 @@ export const AdminView: React.FC<AdminViewProps> = ({
 
             {/* Artikelliste rechts */}
             <div className="lg:col-span-7 bg-slate-900 border border-slate-800 rounded-2xl p-4 sm:p-5 space-y-3">
-              <h3 className="font-bold text-white text-base">
-                Vorhandene Artikel ({items.length})
-              </h3>
-              <div className="space-y-2 max-h-[640px] overflow-y-auto pr-1">
-                {items.map((item) => {
-                  const catObj = activeCategories.find((c) => c.id === item.category);
-                  return (
-                    <div
-                      key={item.id}
-                      className="p-3 rounded-xl bg-slate-950 border border-slate-800 flex items-center justify-between gap-2"
+              <div className="flex flex-col sm:flex-row sm:items-center justify-between gap-2">
+                <h3 className="font-bold text-white text-base">
+                  Vorhandene Artikel ({items.length})
+                </h3>
+                <div className="flex items-center gap-1.5 flex-wrap">
+                  {items.some((i) => getExpiryStatus(i.expiryDate) === 'expired') && (
+                    <button
+                      type="button"
+                      onClick={() =>
+                        setAdminItemFilter((prev) => (prev === 'expired' ? 'all' : 'expired'))
+                      }
+                      className={`inline-flex items-center gap-1 text-[11px] font-semibold px-2.5 py-1 rounded-full cursor-pointer transition ${
+                        adminItemFilter === 'expired'
+                          ? 'bg-rose-500 text-slate-950'
+                          : 'bg-rose-500/20 text-rose-300 border border-rose-500/40 hover:bg-rose-500/30'
+                      }`}
                     >
-                      <div className="min-w-0">
-                        <div className="flex items-center gap-2">
-                          <span className="font-semibold text-sm text-white truncate">
-                            {item.name}
-                          </span>
-                          <span className="text-[10px] px-2 py-0.5 rounded-full bg-slate-800 text-sky-300 border border-slate-700">
-                            {catObj?.shortLabel || catObj?.label || item.categoryLabel || item.category}
-                          </span>
+                      <AlertTriangle className="w-3 h-3" />
+                      <span>
+                        {items.filter((i) => getExpiryStatus(i.expiryDate) === 'expired').length}{' '}
+                        abgelaufen
+                      </span>
+                    </button>
+                  )}
+                  {items.some((i) => getExpiryStatus(i.expiryDate) === 'warning') && (
+                    <button
+                      type="button"
+                      onClick={() =>
+                        setAdminItemFilter((prev) => (prev === 'warning' ? 'all' : 'warning'))
+                      }
+                      className={`inline-flex items-center gap-1 text-[11px] font-semibold px-2.5 py-1 rounded-full cursor-pointer transition ${
+                        adminItemFilter === 'warning'
+                          ? 'bg-amber-500 text-slate-950'
+                          : 'bg-amber-500/20 text-amber-300 border border-amber-500/40 hover:bg-amber-500/30'
+                      }`}
+                    >
+                      <Clock className="w-3 h-3" />
+                      <span>
+                        {items.filter((i) => getExpiryStatus(i.expiryDate) === 'warning').length}{' '}
+                        bald fällig
+                      </span>
+                    </button>
+                  )}
+                </div>
+              </div>
+
+              {/* Schnelle Artikelsuche */}
+              <div className="relative">
+                <input
+                  type="text"
+                  value={adminItemSearch}
+                  onChange={(e) => setAdminItemSearch(e.target.value)}
+                  placeholder="Artikel nach Name, Ort oder MHD filtern..."
+                  className="w-full pl-3 pr-8 py-1.5 rounded-xl bg-slate-950 border border-slate-700 text-xs text-white placeholder-slate-500 focus:outline-none focus:border-sky-500"
+                />
+                {adminItemSearch && (
+                  <button
+                    type="button"
+                    onClick={() => setAdminItemSearch('')}
+                    className="absolute right-2.5 top-1/2 -translate-y-1/2 text-xs text-slate-400 hover:text-white"
+                  >
+                    ✕
+                  </button>
+                )}
+              </div>
+
+              <div className="space-y-2 max-h-[640px] overflow-y-auto pr-1">
+                {items
+                  .filter((item) => {
+                    if (adminItemFilter === 'expired' && getExpiryStatus(item.expiryDate) !== 'expired') {
+                      return false;
+                    }
+                    if (adminItemFilter === 'warning' && getExpiryStatus(item.expiryDate) !== 'warning') {
+                      return false;
+                    }
+                    if (adminItemSearch.trim()) {
+                      const q = adminItemSearch.toLowerCase();
+                      const matchName = item.name.toLowerCase().includes(q);
+                      const matchLoc = (item.location || '').toLowerCase().includes(q);
+                      const matchAlias = item.aliases.some((a) => a.toLowerCase().includes(q));
+                      const matchExp = item.expiryDate
+                        ? item.expiryDate.includes(q) || formatExpiryDate(item.expiryDate).includes(q)
+                        : false;
+                      return matchName || matchLoc || matchAlias || matchExp;
+                    }
+                    return true;
+                  })
+                  .map((item) => {
+                    const catObj = activeCategories.find((c) => c.id === item.category);
+                    return (
+                      <div
+                        key={item.id}
+                        className="p-3 rounded-xl bg-slate-950 border border-slate-800 flex items-center justify-between gap-2"
+                      >
+                        <div className="min-w-0">
+                          <div className="flex flex-wrap items-center gap-2">
+                            <span className="font-semibold text-sm text-white truncate">
+                              {item.name}
+                            </span>
+                            <span className="text-[10px] px-2 py-0.5 rounded-full bg-slate-800 text-sky-300 border border-slate-700">
+                              {catObj?.shortLabel || catObj?.label || item.categoryLabel || item.category}
+                            </span>
+                            {item.expiryDate && (() => {
+                              const status = getExpiryStatus(item.expiryDate);
+                              const formatted = formatExpiryDate(item.expiryDate);
+                              const days = getDaysUntilExpiry(item.expiryDate);
+                              if (status === 'expired') {
+                                return (
+                                  <span className="inline-flex items-center gap-1 text-[10px] font-semibold px-2 py-0.5 rounded-full bg-rose-500/20 text-rose-300 border border-rose-500/40">
+                                    <AlertTriangle className="w-3 h-3 text-rose-400 shrink-0" />
+                                    MHD abgelaufen ({formatted})
+                                  </span>
+                                );
+                              }
+                              if (status === 'warning') {
+                                return (
+                                  <span className="inline-flex items-center gap-1 text-[10px] font-semibold px-2 py-0.5 rounded-full bg-amber-500/20 text-amber-300 border border-amber-500/40">
+                                    <Clock className="w-3 h-3 text-amber-400 shrink-0" />
+                                    MHD {days === 0 ? 'heute' : days === 1 ? 'morgen' : `in ${days} T.`} ({formatted})
+                                  </span>
+                                );
+                              }
+                              return (
+                                <span className="inline-flex items-center gap-1 text-[10px] text-slate-300 px-2 py-0.5 rounded-full bg-slate-900 border border-slate-700">
+                                  <Calendar className="w-3 h-3 text-slate-400 shrink-0" />
+                                  MHD: {formatted}
+                                </span>
+                              );
+                            })()}
+                          </div>
+                          <div className="text-xs text-slate-400 mt-0.5">
+                            Bestand:{' '}
+                            <strong className="text-emerald-300">
+                              {formatStockDisplay(item).primaryText}
+                            </strong>{' '}
+                            • Min: {item.minStock} {item.unit}
+                            {item.location ? ` • Ort: ${item.location}` : ''}
+                            {item.aliases.length > 0
+                              ? ` • Begriffe: ${item.aliases.slice(0, 3).join(', ')}`
+                              : ''}
+                          </div>
                         </div>
-                        <div className="text-xs text-slate-400 mt-0.5">
-                          Bestand:{' '}
-                          <strong className="text-emerald-300">
-                            {formatStockDisplay(item).primaryText}
-                          </strong>{' '}
-                          • Min: {item.minStock} {item.unit}
-                          {item.aliases.length > 0
-                            ? ` • Begriffe: ${item.aliases.slice(0, 3).join(', ')}`
-                            : ''}
+                        <div className="flex items-center gap-1.5 shrink-0">
+                          <button
+                            type="button"
+                            onClick={() => startEditItem(item)}
+                            className="p-2 rounded-lg bg-slate-800 hover:bg-slate-700 text-sky-300 cursor-pointer"
+                            title="Bearbeiten"
+                          >
+                            <Edit3 className="w-4 h-4" />
+                          </button>
+                          <button
+                            type="button"
+                            onClick={() => {
+                              if (window.confirm(`Artikel „${item.name}“ wirklich löschen?`)) {
+                                onDeleteItem(item.id);
+                              }
+                            }}
+                            className="p-2 rounded-lg bg-slate-800 hover:bg-rose-500/20 text-slate-400 hover:text-rose-400 cursor-pointer"
+                            title="Löschen"
+                          >
+                            <Trash2 className="w-4 h-4" />
+                          </button>
                         </div>
                       </div>
-                      <div className="flex items-center gap-1.5 shrink-0">
-                        <button
-                          type="button"
-                          onClick={() => startEditItem(item)}
-                          className="p-2 rounded-lg bg-slate-800 hover:bg-slate-700 text-sky-300 cursor-pointer"
-                          title="Bearbeiten"
-                        >
-                          <Edit3 className="w-4 h-4" />
-                        </button>
-                        <button
-                          type="button"
-                          onClick={() => {
-                            if (window.confirm(`Artikel „${item.name}“ wirklich löschen?`)) {
-                              onDeleteItem(item.id);
-                            }
-                          }}
-                          className="p-2 rounded-lg bg-slate-800 hover:bg-rose-500/20 text-slate-400 hover:text-rose-400 cursor-pointer"
-                          title="Löschen"
-                        >
-                          <Trash2 className="w-4 h-4" />
-                        </button>
-                      </div>
-                    </div>
-                  );
-                })}
+                    );
+                  })}
               </div>
             </div>
           </div>

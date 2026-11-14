@@ -15,6 +15,7 @@ import {
   CheckCircle2,
   User,
   Calendar,
+  Clock,
 } from 'lucide-react';
 import {
   AppSettings,
@@ -28,8 +29,11 @@ import {
 import { CATEGORIES } from '../data/defaultData';
 import {
   formatEnteredAmount,
+  formatExpiryDate,
   formatGermanNumber,
   formatStockDisplay,
+  getDaysUntilExpiry,
+  getExpiryStatus,
   pluralizeUnit,
   roundStock,
   toPrimaryUnitQuantity,
@@ -662,9 +666,38 @@ export const KellerlisteView: React.FC<KellerlisteViewProps> = ({
                   >
                     <div className="flex items-start justify-between gap-2">
                       <div>
-                        <h4 className="font-bold text-white text-sm sm:text-base leading-snug">
-                          {item.name}
-                        </h4>
+                        <div className="flex flex-wrap items-center gap-1.5">
+                          <h4 className="font-bold text-white text-sm sm:text-base leading-snug">
+                            {item.name}
+                          </h4>
+                          {item.expiryDate && (() => {
+                            const status = getExpiryStatus(item.expiryDate);
+                            const formatted = formatExpiryDate(item.expiryDate);
+                            const days = getDaysUntilExpiry(item.expiryDate);
+                            if (status === 'expired') {
+                              return (
+                                <span className="inline-flex items-center gap-1 text-[10px] font-semibold px-2 py-0.5 rounded-full bg-rose-500/20 text-rose-300 border border-rose-500/40">
+                                  <AlertTriangle className="w-3 h-3 text-rose-400" />
+                                  MHD abgelaufen ({formatted})
+                                </span>
+                              );
+                            }
+                            if (status === 'warning') {
+                              return (
+                                <span className="inline-flex items-center gap-1 text-[10px] font-semibold px-2 py-0.5 rounded-full bg-amber-500/20 text-amber-300 border border-amber-500/40">
+                                  <Clock className="w-3 h-3 text-amber-400" />
+                                  MHD {days === 0 ? 'heute' : days === 1 ? 'morgen' : `in ${days} T.`} ({formatted})
+                                </span>
+                              );
+                            }
+                            return (
+                              <span className="inline-flex items-center gap-1 text-[10px] text-slate-300 px-2 py-0.5 rounded-full bg-slate-900 border border-slate-700">
+                                <Calendar className="w-3 h-3 text-slate-400" />
+                                MHD: {formatted}
+                              </span>
+                            );
+                          })()}
+                        </div>
                         <span className="text-[11px] text-slate-400">
                           Aktuell im Keller:{' '}
                           <strong className="text-emerald-300">{stockDisplay.primaryText}</strong>

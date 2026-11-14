@@ -1,6 +1,6 @@
 import { CategoryId, CategoryInfo, InventoryItem, InventoryTransaction } from '../types';
 import { CATEGORIES } from '../data/defaultData';
-import { formatGermanNumber, formatStockDisplay, roundStock } from './units';
+import { formatGermanNumber, formatStockDisplay, normalizeExpiryDate, roundStock } from './units';
 
 function escapeCsvCell(val: string | number | boolean | undefined): string {
   if (val === undefined || val === null) return '';
@@ -43,6 +43,7 @@ export function exportInventoryToCsv(
     'Mindestbestand',
     'Sollbestand',
     'Lagerort',
+    'Ablaufdatum',
     'Leihgerät (Rückgabepflicht)',
     'Teilmengen erlaubt',
     'Suchbegriffe / Synonyme',
@@ -64,6 +65,7 @@ export function exportInventoryToCsv(
       formatGermanNumber(item.minStock),
       item.targetStock !== undefined ? formatGermanNumber(item.targetStock) : '',
       item.location || '',
+      item.expiryDate || '',
       item.isReturnable ? 'Ja' : 'Nein',
       item.allowFractions ? 'Ja' : 'Nein',
       item.aliases.join(', '),
@@ -87,6 +89,7 @@ export function generateCsvTemplate(): string {
     'Mindestbestand',
     'Sollbestand',
     'Lagerort',
+    'Ablaufdatum',
     'Leihgerät (Rückgabepflicht)',
     'Teilmengen erlaubt',
     'Suchbegriffe / Synonyme',
@@ -103,6 +106,7 @@ export function generateCsvTemplate(): string {
       '3',
       '8',
       'Getränkekeller Regal A',
+      '2026-12-31',
       'Nein',
       'Ja',
       'bier, pils, kasten bier',
@@ -117,6 +121,7 @@ export function generateCsvTemplate(): string {
       '2',
       '5',
       'Werkzeugschrank Fach 2',
+      '',
       'Nein',
       'Ja',
       'gaffa, panzertape, klebeband',
@@ -131,6 +136,7 @@ export function generateCsvTemplate(): string {
       '8',
       '8',
       'Lagerraum Hinten',
+      '',
       'Ja',
       'Nein',
       'bierzeltgarnitur, biertisch, bierbank',
@@ -233,6 +239,7 @@ export function parseInventoryCsv(
   const idxMinStock = headers.findIndex((h) => h.includes('mindest'));
   const idxTargetStock = headers.findIndex((h) => h.includes('soll') || h.includes('ziel'));
   const idxLocation = headers.findIndex((h) => h.includes('lagerort') || h.includes('ort') || h.includes('regal'));
+  const idxExpiry = headers.findIndex((h) => h.includes('ablauf') || h.includes('mhd') || h.includes('verfall') || h.includes('haltbar'));
   const idxReturnable = headers.findIndex((h) => h.includes('leih') || h.includes('rückgabe'));
   const idxFractions = headers.findIndex((h) => h.includes('teilmenge') || h.includes('angebrochen'));
   const idxAliases = headers.findIndex((h) => h.includes('suchbegriff') || h.includes('synonym') || h.includes('alias'));
@@ -309,6 +316,8 @@ export function parseInventoryCsv(
     const targetStock = rawTarget ? roundStock(Math.max(0, parseFloat(rawTarget) || 0)) : undefined;
 
     const location = idxLocation >= 0 ? cols[idxLocation]?.trim() || undefined : undefined;
+    const rawExpiry = idxExpiry >= 0 ? cols[idxExpiry]?.trim() : undefined;
+    const parsedExpiry = rawExpiry ? normalizeExpiryDate(rawExpiry) : undefined;
 
     const isReturnable =
       idxReturnable >= 0
@@ -333,6 +342,7 @@ export function parseInventoryCsv(
     );
 
     if (existingIdx >= 0) {
+      const expiryDate = idxExpiry >= 0 ? parsedExpiry : updatedList[existingIdx].expiryDate;
       updatedList[existingIdx] = {
         ...updatedList[existingIdx],
         category,
@@ -344,6 +354,7 @@ export function parseInventoryCsv(
         minStock,
         targetStock,
         location: location ?? updatedList[existingIdx].location,
+        expiryDate,
         isReturnable,
         allowFractions,
         aliases: aliases.length > 0 ? aliases : updatedList[existingIdx].aliases,
@@ -365,6 +376,7 @@ export function parseInventoryCsv(
         minStock,
         targetStock,
         location,
+        expiryDate: parsedExpiry,
         aliases,
         updatedAt: now,
       });
